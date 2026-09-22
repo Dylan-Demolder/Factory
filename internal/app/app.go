@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dylan-demolder/factory-/internal/agent"
-	"github.com/dylan-demolder/factory-/internal/config"
-	"github.com/dylan-demolder/factory-/internal/pipeline"
-	"github.com/dylan-demolder/factory-/internal/proc"
-	"github.com/dylan-demolder/factory-/internal/state"
+	"github.com/dylan-demolder/factory/internal/agent"
+	"github.com/dylan-demolder/factory/internal/config"
+	"github.com/dylan-demolder/factory/internal/pipeline"
+	"github.com/dylan-demolder/factory/internal/proc"
+	"github.com/dylan-demolder/factory/internal/state"
 )
 
 var nameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)

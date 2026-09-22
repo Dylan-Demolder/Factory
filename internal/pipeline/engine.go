@@ -15,11 +15,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dylan-demolder/factory-/internal/agent"
-	"github.com/dylan-demolder/factory-/internal/config"
-	"github.com/dylan-demolder/factory-/internal/extract"
-	"github.com/dylan-demolder/factory-/internal/state"
-	"github.com/dylan-demolder/factory-/internal/ui"
+	"github.com/dylan-demolder/factory/internal/agent"
+	"github.com/dylan-demolder/factory/internal/config"
+	"github.com/dylan-demolder/factory/internal/extract"
+	"github.com/dylan-demolder/factory/internal/state"
+	"github.com/dylan-demolder/factory/internal/ui"
 )
 
 type Engine struct {

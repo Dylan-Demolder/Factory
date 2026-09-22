@@ -226,8 +226,8 @@ Passing tests aren't the finish line. When no tasks remain:
 
 ```sh
 # 1. Install (Go 1.24+). Requires git on PATH.
-go install github.com/dylan-demolder/factory-/cmd/factory@latest
-#   or: git clone … && cd factory- && go build -o ~/.local/bin/factory ./cmd/factory
+go install github.com/dylan-demolder/factory/cmd/factory@latest
+#   or: git clone … && cd Factory && go build -o ~/.local/bin/factory ./cmd/factory
 
 # 2. Create a config
 mkdir -p ~/.config/factory && cd ~/.config/factory

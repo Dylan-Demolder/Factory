@@ -26,10 +26,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dylan-demolder/factory-/internal/agent"
-	"github.com/dylan-demolder/factory-/internal/app"
-	"github.com/dylan-demolder/factory-/internal/config"
-	"github.com/dylan-demolder/factory-/internal/state"
+	"github.com/dylan-demolder/factory/internal/agent"
+	"github.com/dylan-demolder/factory/internal/app"
+	"github.com/dylan-demolder/factory/internal/config"
+	"github.com/dylan-demolder/factory/internal/state"
 )
 
 //go:embed static

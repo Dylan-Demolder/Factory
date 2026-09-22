@@ -12,10 +12,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/dylan-demolder/factory-/internal/agent"
-	"github.com/dylan-demolder/factory-/internal/config"
-	"github.com/dylan-demolder/factory-/internal/state"
-	"github.com/dylan-demolder/factory-/internal/ui"
+	"github.com/dylan-demolder/factory/internal/agent"
+	"github.com/dylan-demolder/factory/internal/config"
+	"github.com/dylan-demolder/factory/internal/state"
+	"github.com/dylan-demolder/factory/internal/ui"
 )
 
 // fake is a scripted agent. handler receives the request and the number of

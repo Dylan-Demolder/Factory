@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dylan-demolder/factory-/internal/config"
-	"github.com/dylan-demolder/factory-/internal/proc"
+	"github.com/dylan-demolder/factory/internal/config"
+	"github.com/dylan-demolder/factory/internal/proc"
 )
 
 // maxArgPrompt is the largest prompt passed inline as an argument; Linux

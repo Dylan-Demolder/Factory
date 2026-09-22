@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/dylan-demolder/factory-/internal/state"
+	"github.com/dylan-demolder/factory/internal/state"
 )
 
 const autonomyNote = "The project will be built by autonomous AI coding agents with no human available after the spec is approved, so everything must be concrete, unambiguous and testable."
