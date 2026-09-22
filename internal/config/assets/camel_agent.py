@@ -12,7 +12,7 @@ to stdout. Configure it with environment variables (set them in the agent's
   CAMEL_API_KEY_ENV  name of the env var that holds the API key
   CAMEL_SYSTEM       optional system message
 
-Install: pip install camel-ai
+Install: pip install camel-ai "mcp<2"
 If your CAMEL agents already run behind an HTTP service, you can instead
 replace this script with a `curl` call or an "openai"-type agent.
 """
@@ -30,8 +30,24 @@ def main() -> int:
         from camel.agents import ChatAgent
         from camel.models import ModelFactory
         from camel.types import ModelPlatformType
-    except ImportError:
-        print("camel-ai is not installed: pip install camel-ai", file=sys.stderr)
+    except ModuleNotFoundError as e:
+        # A package is genuinely absent. ModuleNotFoundError is a subclass of
+        # ImportError, so it has to be caught first.
+        print(
+            f"camel-ai is not installed ({e}). Run: pip install camel-ai",
+            file=sys.stderr,
+        )
+        return 3
+    except ImportError as e:
+        # camel-ai is present but one of its own imports failed. As of
+        # camel-ai 0.2.x the usual cause is an unpinned transitive dependency:
+        # camel-ai requires mcp>=1.3.0 with no upper bound, and mcp 2.x
+        # removed FastMCP, so pip resolves a combination that cannot import.
+        print(
+            f"camel-ai is installed but failed to import: {e}. "
+            "Try: pip install 'mcp<2'",
+            file=sys.stderr,
+        )
         return 3
 
     platform = os.environ.get("CAMEL_PLATFORM", "openai-compatible-model")
@@ -45,20 +61,27 @@ def main() -> int:
     key_env = os.environ.get("CAMEL_API_KEY_ENV")
     api_key = os.environ.get(key_env) if key_env else None
 
-    model = ModelFactory.create(
-        model_platform=ModelPlatformType(platform),
-        model_type=model_name,
-        api_key=api_key,
-        url=base_url,
-    )
     system = os.environ.get(
         "CAMEL_SYSTEM",
         "You are a careful, senior member of a software product team. "
         "Follow the instructions in the user's message exactly, including any "
         "required output format.",
     )
-    agent = ChatAgent(system_message=system, model=model)
-    response = agent.step(prompt)
+    # Anything raised here (missing credentials, a bad endpoint, a transport
+    # error) is reported as one line: a traceback tells factory nothing that
+    # "agent camel-a: <error>" doesn't say better.
+    try:
+        model = ModelFactory.create(
+            model_platform=ModelPlatformType(platform),
+            model_type=model_name,
+            api_key=api_key,
+            url=base_url,
+        )
+        agent = ChatAgent(system_message=system, model=model)
+        response = agent.step(prompt)
+    except Exception as e:  # noqa: BLE001
+        print(f"{type(e).__name__}: {e}", file=sys.stderr)
+        return 1
     if not response.msgs:
         print("agent returned no message", file=sys.stderr)
         return 1
