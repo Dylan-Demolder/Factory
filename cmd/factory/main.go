@@ -44,6 +44,7 @@ Usage:
   factory status [dir]                 show progress
   factory logs [dir]                   print the run log
   factory stop [dir]                   stop a detached run (resume later with run)
+  factory rm <name> [--yes]            delete a project (confirms first; stops its build)
   factory serve [flags]                web interface for creating, speccing and controlling projects
       --addr HOST:PORT  listen address (default 127.0.0.1:7700)
       --workspace DIR   where projects live (default ~/factory-projects)
@@ -99,6 +100,8 @@ func main() {
 		err = cmdLogs(args)
 	case "stop":
 		err = cmdStop(args)
+	case "rm":
+		err = cmdRm(args)
 	case "serve":
 		err = cmdServe(ctx, args)
 	case "tui":
@@ -459,6 +462,49 @@ func cmdStop(args []string) error {
 		return err
 	}
 	fmt.Printf("Sent stop to pid %d; progress is saved. Resume with: factory run %s --detach\n", pid, dir)
+	return nil
+}
+
+func cmdRm(args []string) error {
+	fs := flag.NewFlagSet("rm", flag.ExitOnError)
+	yes := fs.Bool("yes", false, "skip the confirmation prompt")
+	pos, err := parse(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) == 0 {
+		return errors.New("usage: factory rm <name|path> [--yes]")
+	}
+	dir, err := projectDir(pos)
+	if err != nil {
+		return err
+	}
+	pr, err := app.Open(dir, "")
+	if err != nil {
+		return fmt.Errorf("%s is not a factory project", dir)
+	}
+	_, running := pr.Running()
+
+	// Deleting is irreversible, so say exactly what will happen before doing
+	// it: the path, and that a live build will be stopped as part of it.
+	what := fmt.Sprintf("Delete project %q (%s)", pr.P.Name, dir)
+	if running {
+		what += " and stop its running build"
+	}
+	if !*yes {
+		if !ui.New(os.Stdin, os.Stderr).Confirm(what+"?", false) {
+			return errors.New("aborted — nothing deleted")
+		}
+	}
+	if running {
+		if err := pr.StopAndWait(10 * time.Second); err != nil {
+			return err
+		}
+	}
+	if err := app.Delete(dir); err != nil {
+		return err
+	}
+	fmt.Printf("deleted %s\n", dir)
 	return nil
 }
 

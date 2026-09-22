@@ -67,6 +67,10 @@ type Server struct {
 
 	// StartRun launches a background build; replaceable in tests.
 	StartRun func(pr *app.Project) (int, error)
+
+	// ListModels enumerates the models a provider offers, for the role model
+	// pickers; replaceable in tests so they do not shell out to opencode.
+	ListModels func(ctx context.Context) ([]string, error)
 }
 
 func New(opt Options) (*Server, error) {
@@ -90,6 +94,7 @@ func New(opt Options) (*Server, error) {
 	}
 	s := &Server{opt: opt, sessions: map[string]*session{}, fails: map[string][]time.Time{}}
 	s.StartRun = func(pr *app.Project) (int, error) { return pr.StartRun(s.opt.Exe) }
+	s.ListModels = s.opencodeModels
 	return s, nil
 }
 
@@ -119,6 +124,7 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/projects", s.handleList)
 	api("POST /api/projects", s.handleCreate)
 	api("GET /api/projects/{id}", s.handleProject)
+	api("DELETE /api/projects/{id}", s.handleDelete)
 	api("POST /api/projects/{id}/spec", s.handleSpecStart)
 	api("DELETE /api/projects/{id}/spec", s.handleSpecStop)
 	api("GET /api/projects/{id}/chat", s.handleChat)
@@ -130,6 +136,7 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/projects/{id}/artifact", s.handleArtifact)
 	api("GET /api/config", s.handleConfig)
 	api("PUT /api/config", s.handleConfigSave)
+	api("GET /api/models", s.handleModels)
 	api("POST /api/doctor", s.handleDoctor)
 	notFound := s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "no such endpoint")
@@ -436,6 +443,49 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		"project": pr.P,
 		"session": s.sessionInfo(id),
 	})
+}
+
+// handleDelete removes a project. Deletion is destructive, so it stops at two
+// gates: a running build must be ended first (pass force=true to do both in
+// one request), and an interview running in this process is cancelled before
+// its directory goes — otherwise it would keep asking questions of a path
+// that no longer exists.
+func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	id, pr, ok := s.open(w, r)
+	if !ok {
+		return
+	}
+	force := r.URL.Query().Get("force") == "true"
+	if _, running := pr.Running(); running {
+		if !force {
+			writeErr(w, http.StatusConflict,
+				"a build is running — stop it first, or pass force=true to stop and delete")
+			return
+		}
+		// Terminate is asynchronous; StopAndWait waits for the process to
+		// exit, or Delete's running check would refuse the very thing we
+		// just stopped.
+		if err := pr.StopAndWait(5 * time.Second); err != nil {
+			writeErr(w, http.StatusConflict, err.Error())
+			return
+		}
+	}
+
+	s.mu.Lock()
+	if sess, present := s.sessions[id]; present {
+		if sess.cancel != nil {
+			sess.cancel()
+		}
+		delete(s.sessions, id)
+	}
+	s.mu.Unlock()
+
+	dir := pr.Store.Root
+	if err := app.Delete(dir); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "id": id, "deleted": dir})
 }
 
 // ---- spec interview ----

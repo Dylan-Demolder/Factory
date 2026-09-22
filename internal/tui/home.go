@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -23,16 +24,21 @@ func (m Model) updateHome(msg tea.Msg) (tea.Model, tea.Cmd) {
 	items := m.visibleProjects()
 	switch km.String() {
 	case "up", "k":
+		// Moving off a row abandons any pending delete for the old one.
+		m.delConfirm = ""
 		if m.cursor > 0 {
 			m.cursor--
 		}
 	case "down", "j":
+		m.delConfirm = ""
 		if m.cursor < len(items)-1 {
 			m.cursor++
 		}
 	case "g":
+		m.delConfirm = ""
 		m.cursor = 0
 	case "G":
+		m.delConfirm = ""
 		m.cursor = max(0, len(items)-1)
 	case "/":
 		m.filterOn = true
@@ -42,6 +48,22 @@ func (m Model) updateHome(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if p := m.current(); p != nil {
 			return m, m.openProject(*p)
 		}
+	case "d":
+		p := m.current()
+		if p == nil {
+			return m, sayStatus("select a project to delete", true)
+		}
+		if m.delConfirm == p.ID {
+			m.delConfirm = ""
+			return m, deleteProject(*p)
+		}
+		m.delConfirm = p.ID
+		running := ""
+		if p.Running {
+			running = " and stop its running build"
+		}
+		return m, sayStatus(
+			fmt.Sprintf("delete %q%s? press d again to confirm — esc cancels", p.Name, running), true)
 	case "n":
 		m.route = routeNew
 		m.fresh = newProjectState{}
@@ -142,4 +164,34 @@ func (m Model) viewHome(w, h int) string {
 	b.WriteString("\n" + sectionStyle.Render("Workspace") + "\n")
 	b.WriteString("  " + mutedStyle.Render(m.Workspace) + "\n")
 	return lipgloss.NewStyle().Padding(1, 2).Width(w).Height(h).Render(b.String())
+}
+
+// projectDeletedMsg is deleteProject's verdict.
+type projectDeletedMsg struct {
+	name string
+	err  error
+}
+
+// deleteProject stops a running build first, then removes the directory.
+//
+// Stopping matters twice over: app.Delete refuses a running build, and
+// deleting out from under a live `factory run` would leave it writing into a
+// hole. StopAndWait (rather than Stop) because Terminate only signals.
+func deleteProject(p app.Summary) tea.Cmd {
+	return func() tea.Msg {
+		pr, err := app.Open(p.Dir, "")
+		if err != nil {
+			return projectDeletedMsg{name: p.Name,
+				err: fmt.Errorf("%s is not a factory project", p.Dir)}
+		}
+		if _, running := pr.Running(); running {
+			if err := pr.StopAndWait(10 * time.Second); err != nil {
+				return projectDeletedMsg{name: p.Name, err: err}
+			}
+		}
+		if err := app.Delete(p.Dir); err != nil {
+			return projectDeletedMsg{name: p.Name, err: err}
+		}
+		return projectDeletedMsg{name: p.Name}
+	}
 }
