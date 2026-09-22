@@ -1,1 +1,5 @@
 /factory
+
+# Python bytecode next to the embedded adapter
+__pycache__/
+*.py[cod]
