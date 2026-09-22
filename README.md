@@ -282,7 +282,7 @@ factory status todo-cli
 }
 ```
 
-Run `pip install camel-ai`, and export the variable named by `CAMEL_API_KEY_ENV` in the environment factory runs in. For systemd, use `Environment=` or `EnvironmentFile=`.
+Run `pip install camel-ai "mcp<2"`, and export the variable named by `CAMEL_API_KEY_ENV` in the environment factory runs in. The `"mcp<2"` pin matters: camel-ai declares `mcp>=1.3.0` with no upper bound, and mcp 2.x removed `FastMCP`, so an unpinned install resolves a combination that fails on import. For systemd, use `Environment=` or `EnvironmentFile=`.
 
 ### Anything else
 
