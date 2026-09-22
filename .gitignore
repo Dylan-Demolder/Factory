@@ -1,5 +1,8 @@
 /factory
 
+# The greeter CLI binary built by `go build -o greeter ./cmd/greeter`
+/greeter
+
 # Python bytecode next to the embedded adapter
 __pycache__/
 *.py[cod]

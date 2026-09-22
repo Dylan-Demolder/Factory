@@ -35,6 +35,7 @@ It's a lightweight alternative to heavier orchestrators such as Paperclip: **one
 - [What gets written to disk](#what-gets-written-to-disk)
 - [Resilience and resuming](#resilience-and-resuming)
 - [Tips, costs and troubleshooting](#tips-costs-and-troubleshooting)
+- [The greeter CLI](#the-greeter-cli)
 - [Architecture and development](#architecture-and-development)
 
 ---
@@ -738,10 +739,48 @@ To go faster and cheaper, set `rounds: 1`, `on_tasks: false`, or a smaller panel
 
 ---
 
+## The greeter CLI
+
+`greeter` is a small command-line tool in this repository that greets people. It is deliberately tiny — a worked example of the whole install → run → test loop.
+
+### Install
+
+Go 1.24+ (the same toolchain factory needs) is the only requirement.
+
+```sh
+go build -o greeter ./cmd/greeter    # binary in the repository root
+# or: go install ./cmd/greeter       # into $(go env GOPATH)/bin
+```
+
+### Run
+
+```sh
+./greeter              # Hello, World!
+./greeter Ada          # Hello, Ada!
+./greeter Ada Grace    # one greeting per line: Hello, Ada!  Hello, Grace!
+./greeter --shout Ada  # HELLO, ADA!
+./greeter -g Hi Ada    # Hi, Ada!
+./greeter --help       # usage
+```
+
+Flags come before the names. Exit status is 0 on success; a wrong flag exits 2 and prints the complaint and the usage on stderr.
+
+### Test
+
+```sh
+sh test.sh
+```
+
+`test.sh` runs the whole repository's suite (`go test -race -count=1 ./...`): the greeter's greeting rules, flag handling, exit statuses and an end-to-end run of the built binary, alongside factory's own pipeline, HTTP, agent and TUI tests.
+
+---
+
 ## Architecture and development
 
 ```
 cmd/factory/        CLI commands and `serve`
+cmd/greeter/        the greeter CLI: flag parsing, help text, exit statuses
+internal/greeter/   the greeting rules cmd/greeter prints
 internal/app/       shared project operations: create/open, start/stop background runs, listing
 internal/pipeline/  the engine: spec, roundtable, plan, build loop, acceptance, report, git
 internal/agent/     adapters: opencode, command, OpenAI-compatible
@@ -757,10 +796,11 @@ internal/proc/      process groups, detaching, pid checks
 The spec interview is written against a small `Asker` interface (`Say`, `Ask`). The terminal prompter and the web chat both implement it, so the CLI and the UI run exactly the same interview code.
 
 ```sh
-go test -race ./...
+sh test.sh        # runs: go test -race -count=1 ./...
 ```
 
 The test suite includes:
+- the greeter CLI: greeting rules (defaults, trimming, case preserved, shout, custom salutations), flag parsing, help text and exit statuses, plus the built binary run end to end
 - scripted fake agents driving complete pipeline runs: retrying after an agent failure, repairing output that can't be read, tests that fail and are retried, reviewer rejections, a blocked task with its dependents blocked too, acceptance gaps turned into fix tasks, and resuming after a crash
 - HTTP tests covering auth, CSRF, CORS, the base path, security headers, a full interview driven through the API, pause/resume, log tailing, the artifact allowlist and doctor
 - agent adapter tests, including timeouts that kill the process tree
