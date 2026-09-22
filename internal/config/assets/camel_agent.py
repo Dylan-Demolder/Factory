@@ -16,8 +16,39 @@ Install: pip install camel-ai "mcp<2"
 If your CAMEL agents already run behind an HTTP service, you can instead
 replace this script with a `curl` call or an "openai"-type agent.
 """
+import logging
 import os
 import sys
+
+
+class _DropContextWindowNoise(logging.Filter):
+    """Silence camel's warning that it cannot size an unknown model.
+
+    `auto` is camelStream's documented model ID, and camel's client has no
+    entry for it, so every call logs "context window size not defined.
+    Defaulting to 999_999_999." on the root logger. That leaks into factory's
+    captured output and makes a healthy reply look like an error.
+
+    The 999_999_999 default is deliberately left alone: camel uses
+    `token_limit` to decide whether to trim messages *before sending them*,
+    while camelStream compacts the middle of the conversation itself and
+    keeps message envelopes in place. Clamping it to the documented 260K here
+    would discard messages locally that the service would have compacted
+    intact. Only this one message is filtered — genuine warnings still show.
+    """
+
+    NEEDLE = "context window size not defined"
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            return self.NEEDLE not in record.getMessage()
+        except Exception:
+            return True
+
+
+# The warning comes from `logging.warning(...)`, i.e. the root logger, so a
+# filter on it is where it has to be caught.
+logging.getLogger().addFilter(_DropContextWindowNoise())
 
 
 def main() -> int:
