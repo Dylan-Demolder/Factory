@@ -283,7 +283,18 @@ factory status todo-cli
 }
 ```
 
-Run `pip install camel-ai "mcp<2"`, and export the variable named by `CAMEL_API_KEY_ENV` in the environment factory runs in. The `"mcp<2"` pin matters: camel-ai declares `mcp>=1.3.0` with no upper bound, and mcp 2.x removed `FastMCP`, so an unpinned install resolves a combination that fails on import. For systemd, use `Environment=` or `EnvironmentFile=`.
+Run `pip install camel-ai "mcp<2"`, and export the variable named by `CAMEL_API_KEY_ENV` in the environment factory runs in. For systemd, use `Environment=` or `EnvironmentFile=`.
+
+The `"mcp<2"` pin matters: camel-ai declares `mcp>=1.3.0` with no upper bound, and mcp 2.x removed `FastMCP`, so an unpinned install resolves a combination that fails on import.
+
+**The bridge is a tool-using agent, not just a chat.** `FACTORY_READONLY=true` (reviewers, interviewers, roundtable seats) offers it read/grep/list only, so it cannot touch files; as the builder it additionally gets `write_file` and `replace_in_file`. Every path is resolved inside the project directory and rejected if it escapes. Without those tools a camel agent could only *talk* about building — factory expects changed files behind it.
+
+The installed copy is `~/.config/factory/adapters/camel_agent.py`; an upgraded binary writes the new version only on `factory init --force`, which **also overwrites `factory.json`** — so after upgrading, copy the embedded adapter across instead:
+
+```sh
+factory init --help >/dev/null   # (config path is printed by `factory doctor`)
+cp <repo>/internal/config/assets/camel_agent.py ~/.config/factory/adapters/
+```
 
 ### Anything else
 
@@ -316,6 +327,7 @@ Run `factory` on a terminal and it opens an interactive workspace: the same feat
 ```
 
 - **`1`–`4`** switch screens (Projects · New · Org chart · Doctor), **`ctrl+k`** opens a filterable command palette, **`?`** shows the key legend, **`q`** quits, **`esc`** backs out one level at a time.
+- **`d` deletes the selected project** — twice to confirm, `esc` cancels, and a running build is stopped first (it says so before you confirm).
 - The **org chart** is fully editable from the keyboard: `←`/`→` cycles which agent fills a role or sits in a seat, `⏎` edits an agent's title/department/notes, `p` edits a persona, `+`/`x` add and remove seats, `[`/`]` reorder, `a` adds an agent, `d` deletes, `s` saves. It refuses an `openai`-type builder and says why, and refuses to discard unsaved edits silently.
 - The **project** screen has Overview · Interview · Log · Files tabs. The interview is a chat: type an answer, `y` to approve, `/done` to skip to the spec. The log tails incrementally and only jumps to the bottom if you were already there.
 - Builds are **detached**: approving the spec forks `factory run`, so leaving the terminal does not stop it — re-open the project to watch it.
@@ -336,6 +348,8 @@ Each role — `interviewer`, `planner`, `builder`, `reviewer`, `moderator` — i
 - How the override is applied depends on the agent's type: `opencode` → `--model`, `openai` → `model`, `command` → substituted into `{{model}}`. For `command` agents the args must contain `{{model}}`, and validation rejects an override that would otherwise be accepted and silently ignored.
 - **camelStream cannot be pinned.** It serves a fleet and only accepts `auto`, so leave `role_models` unset for camel seats.
 - `factory doctor`, the logs and both editors show an overridden seat as `agent (model)`, so a run that looks wrong can be traced to its configuration.
+
+Both editors can set this directly: the web org chart and the terminal workspace each offer a picker per seat. Choices come from `GET /api/models` — real IDs from `opencode models` where a provider can enumerate them, `auto` for camelStream, and a free-text field carrying the flag (`--model`, `-m`) where the CLI accepts any ID. Clearing an override removes the key rather than setting an empty string, since an empty override is rejected.
 
 ## The web interface
 
@@ -435,6 +449,7 @@ Make sure `PATH` includes `git`, `opencode` and `python3`. systemd services don'
 - **An interview lives in the server process.** If the server restarts mid-interview, click **Resume interview**. Your answers are in `state.json`; only the chat's status lines are lost.
 - **CLI and web share the same state.** A project created with `factory new` inside the workspace directory shows up in the UI, and `factory status`, `stop` and `run` work on projects created from the UI.
 - If no `--token` or `$FACTORY_TOKEN` is set, a random token is generated once and saved to `~/.config/factory/token` (mode 0600).
+- The access token is printed on **every** start — whether it came from `--token`, `$FACTORY_TOKEN`, or the generated file — so you can always copy it straight from the log (`journalctl --user -u factory -n 20`). It prints nothing for `--no-auth`. Under systemd this means the token is in the journal, which is readable by your own user only; if that bothers you, drop the `FACTORY_TOKEN` line from the env file and read `~/.config/factory/token` instead.
 
 ---
 
@@ -555,6 +570,7 @@ factory run [dir] [--detach]              run or resume the build (foreground, o
 factory status [dir]                      phase, tasks, use-case verdicts, recent log
 factory logs [dir]                        print .factory/run.log
 factory stop [dir]                        stop a background build (resume with run)
+factory rm <name> [--yes]                 delete a project — confirms first (unless --yes), stops a running build, then removes the directory
 factory serve [flags]                     web interface
     --addr HOST:PORT        default 127.0.0.1:7700            ($FACTORY_ADDR)
     --workspace DIR         default ~/factory-projects        ($FACTORY_WORKSPACE)
@@ -589,11 +605,13 @@ All endpoints are under `<base-path>/api/`, take and return JSON, and require au
 | `POST /projects/{id}/chat` | `{text}` | Answer the pending question (`""` = no preference, `"y"` = approve, `"/done"` = skip) |
 | `POST /projects/{id}/run` | | `{pid}`, starts a background build |
 | `POST /projects/{id}/stop` | | Stops it |
+| `DELETE /projects/{id}` | `?force=true` | Deletes the project, its files and git history. **409** while a build is running unless `force=true` (stops it first); cancels a live interview; 404 unknown, 400 bad name |
 | `GET /projects/{id}/log` | `?offset=N` (`-1` = last 64 KB) | `{text, offset, size}`. Pass the returned `offset` next time |
 | `GET /projects/{id}/artifacts` | | `{artifacts: [{path, group, size, modified}]}` |
 | `GET /projects/{id}/artifact` | `?path=…` (from the list) | `{path, content, truncated}` |
-| `GET /config` | | Agents (no secrets), roles, roundtable, limits |
+| `GET /config` | | Agents (no secrets), roles, `role_models`, `effective_models`, roundtable, limits |
 | `PUT /config` | `{config, meta}` | `{ok}`, or `400 {error, fields: [{field, message}]}` naming the input at fault |
+| `GET /models` | | Model sources for the role pickers: `opencode` ids enumerated live, camelStream's `auto`, and free-text entries (with the flag) for the CLIs that accept any id. A provider that cannot be enumerated yields a `warnings` entry, not an error |
 | `POST /doctor` | | `{results: [{name, ok, reply, error, duration}]}` |
 
 Example: drive a whole interview with curl:
@@ -729,6 +747,8 @@ To go faster and cheaper, set `rounds: 1`, `on_tasks: false`, or a smaller panel
 | Symptom | Fix |
 |---|---|
 | `doctor` shows an agent failing | Run its command by hand. Check `PATH`, API keys and `CAMEL_*` settings |
+| A roundtable seat sits idle for minutes | Watch the seat's process: if its CPU time isn't advancing it is blocked on the network. `agent_timeout` (30m) would kill it and `agent_retries` would try again — each attempt costs the full timeout. Killing the stuck process yourself unblocks it immediately: factory records the error and retries straight away (`.factory/events.jsonl`). |
+| camel agents error with rate/queue limits | A camelStream subscription allows a fixed number of **concurrent** streams (2 on the small plan). Roundtable participants run *in parallel*, so keep the number of camel seats on the panel at or below that allowance. |
 | Build runs but opencode never edits files | Check `opencode.json` permissions in the project. Try `opencode run "create hello.txt"` there |
 | Every task fails "tests failed" | Look at `.factory/tasks/T1-attempt-*-tests.log`. Set `test_command` in the config if the planner guessed wrong |
 | Reviewer rejects forever | Read the `-review.md` files. Loosen the reviewer's model or persona, or raise `max_task_attempts` |

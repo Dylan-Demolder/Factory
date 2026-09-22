@@ -57,6 +57,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		return fmt.Errorf("--addr: %w", err)
 	}
 	loopback := host == "localhost" || (net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback())
+	savedTokenNote := ""
 	if *noAuth {
 		if !loopback {
 			return errors.New("--no-auth is only allowed when listening on a loopback address")
@@ -68,10 +69,21 @@ func cmdServe(ctx context.Context, args []string) error {
 			return err
 		}
 		*token = t
-		fmt.Printf("access token (saved in %s):\n  %s\n\n", path, t)
+		savedTokenNote = path
 	}
 	if !*noAuth && len(*token) < 16 {
 		return errors.New("the access token must be at least 16 characters")
+	}
+	// Print the token on every start, whichever way it arrived: --token,
+	// FACTORY_TOKEN, or the file just written. It used to print only when
+	// generated, so a configured install never showed it and the only way to
+	// log in was to go read the config by hand.
+	if !*noAuth {
+		if savedTokenNote != "" {
+			fmt.Printf("access token (generated, saved in %s):\n  %s\n\n", savedTokenNote, *token)
+		} else {
+			fmt.Printf("access token:\n  %s\n\n", *token)
+		}
 	}
 
 	srv, err := web.New(web.Options{
