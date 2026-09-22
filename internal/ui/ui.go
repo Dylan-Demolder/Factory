@@ -9,6 +9,16 @@ import (
 	"strings"
 )
 
+// Asker is what the spec interview needs from its human: the terminal
+// Prompter and the web interface's chat both implement it.
+type Asker interface {
+	Say(format string, args ...any)
+	// Ask returns the human's answer. If the answer equals one of quick
+	// (case-insensitive) it is a shortcut such as "y" or "/done".
+	Ask(question string, quick ...string) (string, error)
+}
+
+// Prompter is the terminal Asker.
 type Prompter struct {
 	in  *bufio.Reader
 	out io.Writer
@@ -29,7 +39,7 @@ func (p *Prompter) Say(format string, args ...any) {
 // If the first line equals one of quick (case-insensitive), it is returned
 // immediately without waiting for the terminating empty line.
 func (p *Prompter) Ask(question string, quick ...string) (string, error) {
-	fmt.Fprintf(p.out, "\n%s\n> ", question)
+	fmt.Fprintf(p.out, "\n%s\n(end your answer with an empty line)\n> ", question)
 	var lines []string
 	for {
 		line, err := p.in.ReadString('\n')

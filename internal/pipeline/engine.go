@@ -28,7 +28,7 @@ type Engine struct {
 	Store  *state.Store
 	P      *state.Project
 	Out    io.Writer
-	UI     *ui.Prompter // nil when running unattended
+	UI     ui.Asker // nil when running unattended
 	// Backoff between agent retries.
 	Backoff time.Duration
 }
