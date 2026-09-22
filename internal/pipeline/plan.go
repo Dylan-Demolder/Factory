@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/dylan-demolder/factory/internal/agent"
+	"github.com/dylan-demolder/factory/internal/config"
 	"github.com/dylan-demolder/factory/internal/extract"
 	"github.com/dylan-demolder/factory/internal/state"
 )
@@ -31,7 +32,7 @@ func (e *Engine) Plan(ctx context.Context) error {
 	e.writeOpencodeConfig()
 
 	var plan planReply
-	if _, err := e.callJSON(ctx, e.Cfg.Roles.Planner, agent.Request{
+	if _, err := e.callRoleJSON(ctx, config.RolePlanner, agent.Request{
 		Stage: "plan", System: plannerSystem(), Prompt: planPrompt(p, string(specMD)), ReadOnly: true,
 	}, &plan); err != nil {
 		return err
@@ -42,7 +43,7 @@ func (e *Engine) Plan(ctx context.Context) error {
 
 	if e.Cfg.Roundtable.PlanEnabled() {
 		material := specContext(p) + "\n## Proposed plan\n" + fence("json", mustJSON(plan))
-		out, err := e.Roundtable(ctx, "plan", planRoundtableTopic, material, e.Cfg.Roles.Planner, planSynthesis())
+		out, err := e.Roundtable(ctx, "plan", planRoundtableTopic, material, config.RolePlanner, planSynthesis())
 		if err != nil {
 			return err
 		}
@@ -111,8 +112,8 @@ func firstNonEmpty(vals ...string) string {
 // writeOpencodeConfig lets opencode edit files and run commands without
 // prompting, which an unattended run requires. Existing configs are left alone.
 func (e *Engine) writeOpencodeConfig() {
-	b, ok := e.Cfg.Agents[e.Cfg.Roles.Builder]
-	if !ok || b.Type != "opencode" {
+	_, b, err := e.roleConfig(config.RoleBuilder)
+	if err != nil || b.Type != "opencode" {
 		return
 	}
 	for _, name := range []string{"opencode.json", "opencode.jsonc"} {

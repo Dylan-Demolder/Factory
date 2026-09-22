@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/dylan-demolder/factory/internal/agent"
+	"github.com/dylan-demolder/factory/internal/config"
 	"github.com/dylan-demolder/factory/internal/extract"
 	"github.com/dylan-demolder/factory/internal/state"
 )
@@ -34,8 +35,8 @@ func (e *Engine) Accept(ctx context.Context) (bool, error) {
 
 	trial := "(no hands-on trial: the spec has no use cases)"
 	if len(p.Spec.UseCases) > 0 {
-		e.logf("  hands-on trial of %d use case(s) by %s", len(p.Spec.UseCases), e.Cfg.Roles.Builder)
-		out, err := e.call(ctx, e.Cfg.Roles.Builder, agent.Request{Stage: "trial", System: builderSystem(), Prompt: trialPrompt(p)})
+		e.logf("  hands-on trial of %d use case(s) by %s", len(p.Spec.UseCases), e.roleLabel(config.RoleBuilder))
+		out, err := e.callRole(ctx, config.RoleBuilder, agent.Request{Stage: "trial", System: builderSystem(), Prompt: trialPrompt(p)})
 		if err != nil {
 			if ctx.Err() != nil {
 				return false, ctx.Err()
@@ -68,14 +69,14 @@ func (e *Engine) Accept(ctx context.Context) (bool, error) {
 	readme, _ := os.ReadFile(filepath.Join(e.root(), "README.md"))
 	material := acceptanceMaterial(p, trial, tr, e.files(300), agent.Tail(string(readme), 8000))
 
-	out, err := e.Roundtable(ctx, fmt.Sprintf("acceptance-%d", round), acceptanceTopic, material, e.Cfg.Roles.Moderator, acceptanceSynthesis())
+	out, err := e.Roundtable(ctx, fmt.Sprintf("acceptance-%d", round), acceptanceTopic, material, config.RoleModerator, acceptanceSynthesis())
 	if err != nil {
 		return false, err
 	}
 	var v acceptanceVerdict
 	if err := extract.JSON(out, &v); err != nil {
 		// Ask the moderator to restate the verdict as JSON.
-		if _, err := e.callJSON(ctx, e.Cfg.Roles.Moderator, agent.Request{
+		if _, err := e.callRoleJSON(ctx, config.RoleModerator, agent.Request{
 			Stage: "acceptance-verdict", ReadOnly: true,
 			Prompt: "Restate this acceptance verdict in the required JSON format.\n\n" + out + "\n\n" + acceptanceSynthesis(),
 		}, &v); err != nil {
