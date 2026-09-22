@@ -328,23 +328,29 @@ func (m Model) View() string {
 		return m.renderPalette()
 	}
 
-	// Frame the screen exactly: top bar + its border, the status border +
-	// status line, and the optional key legend. Four lines of chrome — using
-	// three (as if only one of the two bordered rows existed) overflowed the
-	// terminal by a line and scrolled the brand row out of view.
+	// The frame is: 1 top bar line + its border, body, then the status
+	// border + 1 status line — four lines, not three. Rendering more than
+	// the terminal is tall scrolls the top bar out of view.
 	legend := ""
 	legendH := 0
 	if m.showHelp {
-		legend = m.keyLegend()
-		legendH = lipgloss.Height(legend) + 1
+		l := m.keyLegend()
+		// Only show the legend if the body still gets at least one line;
+		// a screen that fits beats a key legend that does not.
+		if h := lipgloss.Height(l) + 1; m.height-4-h >= 1 {
+			legend, legendH = l, h
+		}
 	}
 	bodyH := m.height - 4 - legendH
-	if bodyH < 3 {
-		bodyH = 3
+	if bodyH < 1 {
+		// Clamping higher would push the frame past the terminal height and
+		// scroll the top bar away; a one-line body still fits.
+		bodyH = 1
 	}
 
-	sidebar := m.renderSidebar(sidebarW, bodyH)
-	main := m.renderMain(mainW, bodyH)
+	// Screens pad to their height but do not truncate, so clip them here.
+	sidebar := fitTo(m.renderSidebar(sidebarW, bodyH), bodyH)
+	main := fitTo(m.renderMain(mainW, bodyH), bodyH)
 
 	// Pad by measured width, not by an estimate: an over-long row wraps in
 	// the terminal and pushes the whole frame down a line.
@@ -365,7 +371,9 @@ func (m Model) View() string {
 	if legend != "" {
 		out += "\n" + legend
 	}
-	return out
+	// Belt and braces: whatever the screens rendered, the frame is never
+	// taller than the terminal.
+	return fitTo(out, m.height)
 }
 
 func (m Model) renderSidebar(w, h int) string {
@@ -660,14 +668,32 @@ func progressText(p app.Summary) string {
 const runningDot = "●"
 
 func truncate(s string, n int) string {
-	if n <= 1 {
-		return s
+	if n <= 0 {
+		return ""
 	}
 	r := []rune(s)
 	if len(r) <= n {
 		return s
 	}
+	if n == 1 {
+		return "…"
+	}
 	return string(r[:n-1]) + "…"
+}
+
+// fitTo clips a rendered block to h lines. Screens are asked to size
+// themselves, but a padded block is only ever a minimum: without this a long
+// project list or a tall org chart pushes the frame past the terminal and
+// scrolls the top bar away.
+func fitTo(block string, h int) string {
+	if h <= 0 {
+		return ""
+	}
+	lines := strings.Split(block, "\n")
+	if len(lines) > h {
+		lines = lines[:h]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func clamp(v, lo, hi int) int {
