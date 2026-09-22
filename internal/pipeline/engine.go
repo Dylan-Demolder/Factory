@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dylan-demolder/factory/internal/agent"
@@ -31,6 +32,13 @@ type Engine struct {
 	UI     ui.Asker // nil when running unattended
 	// Backoff between agent retries.
 	Backoff time.Duration
+
+	// Seats resolve lazily and are cached. A seat with a role_models
+	// override needs its own agent object — the shared one in Agents runs
+	// the agent's own model — so caching keeps one object per seat rather
+	// than rebuilding on every call.
+	roleMu    sync.Mutex
+	roleCache map[string]roleSeat
 }
 
 func New(cfg *config.Config, agents map[string]agent.Agent, store *state.Store, p *state.Project, out io.Writer) *Engine {
@@ -55,19 +63,118 @@ func (e *Engine) agent(name string) (agent.Agent, error) {
 	return a, nil
 }
 
-// call runs an agent with retries on failure.
+// roleSeat is a pipeline seat resolved to a running agent, plus the label
+// logs and events should use for it.
+type roleSeat struct {
+	agent agent.Agent
+	label string
+}
+
+// roleConfig is a seat's agent config with that seat's model override
+// applied. Seats are separate from agents: one agent can hold several seats,
+// and role_models lets those seats run different models.
+func (e *Engine) roleConfig(role string) (string, config.Agent, error) {
+	name := e.Cfg.Role(role)
+	if name == "" {
+		return "", config.Agent{}, fmt.Errorf("role %s: no agent assigned", role)
+	}
+	base, ok := e.Cfg.Agents[name]
+	if !ok {
+		return name, config.Agent{}, fmt.Errorf("agent %q not configured", name)
+	}
+	if m := e.Cfg.RoleModel(role); m != "" {
+		base.Model = m
+	}
+	return name, base, nil
+}
+
+// seat resolves a role, applying its model override, and caches the result.
+//
+// When no override applies, the agent already built in e.Agents is reused as
+// is. That matters beyond efficiency: e.Agents is where callers inject
+// substitutes (the test suite supplies in-memory fakes), and rebuilding from
+// config would quietly launch the real binary instead.
+func (e *Engine) seat(role string) (roleSeat, error) {
+	e.roleMu.Lock()
+	defer e.roleMu.Unlock()
+	if s, ok := e.roleCache[role]; ok {
+		return s, nil
+	}
+	name, cfg, err := e.roleConfig(role)
+	if err != nil {
+		return roleSeat{}, err
+	}
+	s := roleSeat{label: name}
+	override := e.Cfg.RoleModel(role)
+	if override == "" {
+		// No override for this seat: the shared agent is exactly right.
+		if a, ok := e.Agents[name]; ok {
+			s.agent = a
+			e.roleCacheSet(role, s)
+			return s, nil
+		}
+	}
+	if orig, ok := e.Cfg.Agents[name]; ok && cfg.Model != orig.Model {
+		// Show the override in the label: "oc-qa (opencode-go/kimi-k3)"
+		s.label = fmt.Sprintf("%s (%s)", name, cfg.Model)
+	}
+	a, err := agent.New(name, cfg, e.Cfg.Limits.AgentTimeout.Duration)
+	if err != nil {
+		return roleSeat{}, err
+	}
+	s.agent = a
+	e.roleCacheSet(role, s)
+	return s, nil
+}
+
+// roleCacheSet stores a resolved seat; the caller holds roleMu.
+func (e *Engine) roleCacheSet(role string, s roleSeat) {
+	if e.roleCache == nil {
+		e.roleCache = map[string]roleSeat{}
+	}
+	e.roleCache[role] = s
+}
+
+// roleLabel describes a seat for humans: its agent, plus the model when a
+// role_models override changes it.
+func (e *Engine) roleLabel(role string) string {
+	if s, err := e.seat(role); err == nil {
+		return s.label
+	}
+	if name := e.Cfg.Role(role); name != "" {
+		return name
+	}
+	return role
+}
+
+// call runs a named agent — used for roundtable seats, which are agents
+// rather than pipeline roles — with retries on failure.
 func (e *Engine) call(ctx context.Context, name string, req agent.Request) (string, error) {
 	a, err := e.agent(name)
 	if err != nil {
 		return "", err
 	}
+	return e.callWith(ctx, name, a, req)
+}
+
+// callRole runs the agent filling a pipeline seat, applying that seat's model
+// override. Every seat goes through here so the override lives in one place.
+func (e *Engine) callRole(ctx context.Context, role string, req agent.Request) (string, error) {
+	s, err := e.seat(role)
+	if err != nil {
+		return "", err
+	}
+	return e.callWith(ctx, s.label, s.agent, req)
+}
+
+func (e *Engine) callWith(ctx context.Context, label string, a agent.Agent, req agent.Request) (string, error) {
 	if req.Dir == "" {
 		req.Dir = e.root()
 	}
 	var lastErr error
 	for attempt := 0; attempt <= e.Cfg.Limits.AgentRetries; attempt++ {
 		if attempt > 0 {
-			e.logf("  retrying %s (%s) after error: %v", name, req.Stage, lastErr)
+			e.logf("  retrying %s (%s) after error: %v", label, req.Stage, lastErr)
 			select {
 			case <-ctx.Done():
 				return "", ctx.Err()
@@ -77,7 +184,7 @@ func (e *Engine) call(ctx context.Context, name string, req agent.Request) (stri
 		start := time.Now()
 		out, err := a.Run(ctx, req)
 		if err == nil {
-			e.Store.Event("agent", fmt.Sprintf("%s %s ok in %s (%d chars)", name, req.Stage, time.Since(start).Round(time.Second), len(out)))
+			e.Store.Event("agent", fmt.Sprintf("%s %s ok in %s (%d chars)", label, req.Stage, time.Since(start).Round(time.Second), len(out)))
 			return out, nil
 		}
 		if ctx.Err() != nil {
@@ -88,10 +195,27 @@ func (e *Engine) call(ctx context.Context, name string, req agent.Request) (stri
 	return "", lastErr
 }
 
-// callJSON calls an agent and decodes a JSON answer into v, asking once
+// callJSON calls a named agent and decodes a JSON answer into v, asking once
 // more for a corrected answer if parsing fails.
 func (e *Engine) callJSON(ctx context.Context, name string, req agent.Request, v any) (string, error) {
-	out, err := e.call(ctx, name, req)
+	a, err := e.agent(name)
+	if err != nil {
+		return "", err
+	}
+	return e.callJSONWith(ctx, name, a, req, v)
+}
+
+// callRoleJSON is callJSON for a pipeline seat, applying its model override.
+func (e *Engine) callRoleJSON(ctx context.Context, role string, req agent.Request, v any) (string, error) {
+	s, err := e.seat(role)
+	if err != nil {
+		return "", err
+	}
+	return e.callJSONWith(ctx, s.label, s.agent, req, v)
+}
+
+func (e *Engine) callJSONWith(ctx context.Context, label string, a agent.Agent, req agent.Request, v any) (string, error) {
+	out, err := e.callWith(ctx, label, a, req)
 	if err != nil {
 		return "", err
 	}
@@ -99,17 +223,17 @@ func (e *Engine) callJSON(ctx context.Context, name string, req agent.Request, v
 	if perr == nil {
 		return out, nil
 	}
-	e.logf("  %s gave unparseable output for %s (%v); asking again", name, req.Stage, perr)
+	e.logf("  %s gave unparseable output for %s (%v); asking again", label, req.Stage, perr)
 	retry := req
 	retry.Stage = req.Stage + "-repair"
 	retry.Prompt = req.Prompt + "\n\n---\nYour previous reply could not be parsed as JSON (" + perr.Error() +
 		"). Reply again with ONLY the JSON object in the required schema, in a ```json fenced block, and nothing else.\n\nPrevious reply:\n" + agent.Tail(out, 6000)
-	out, err = e.call(ctx, name, retry)
+	out, err = e.callWith(ctx, label, a, retry)
 	if err != nil {
 		return "", err
 	}
 	if err := extract.JSON(out, v); err != nil {
-		return out, fmt.Errorf("%s: %s output not parseable: %w", name, req.Stage, err)
+		return out, fmt.Errorf("%s: %s output not parseable: %w", label, req.Stage, err)
 	}
 	return out, nil
 }

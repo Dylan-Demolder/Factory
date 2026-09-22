@@ -323,6 +323,20 @@ Run `factory` on a terminal and it opens an interactive workspace: the same feat
 
 `factory` with no arguments opens it when stdout is a terminal; piped or scripted, it prints usage instead. `factory tui --workspace DIR --config PATH` is the explicit form.
 
+### Choosing a model per role
+
+Each role — `interviewer`, `planner`, `builder`, `reviewer`, `moderator` — is a seat filled by an agent. Sometimes you want the *seat* to run a particular model regardless of who fills it: a stronger model for review, a cheaper one for the interview.
+
+```jsonc
+"roles":       { "reviewer": "oc-qa", "builder": "oc-engineer" },
+"role_models": { "reviewer": "opencode-go/kimi-k3" }   // oc-qa, but this model
+```
+
+- An entry overrides **only its own seat**. Other seats sharing the same agent keep the agent's model — one agent can hold several seats on different models.
+- How the override is applied depends on the agent's type: `opencode` → `--model`, `openai` → `model`, `command` → substituted into `{{model}}`. For `command` agents the args must contain `{{model}}`, and validation rejects an override that would otherwise be accepted and silently ignored.
+- **camelStream cannot be pinned.** It serves a fleet and only accepts `auto`, so leave `role_models` unset for camel seats.
+- `factory doctor`, the logs and both editors show an overridden seat as `agent (model)`, so a run that looks wrong can be traced to its configuration.
+
 ## The web interface
 
 ```sh
@@ -614,6 +628,11 @@ curl -s -H "Authorization: Bearer $T" -H 'Content-Type: application/json' -d '{"
   "roles": {                             // any unset role defaults to an opencode agent
     "interviewer": "", "planner": "", "builder": "", "reviewer": "", "moderator": ""
   },
+  "role_models": {                       // OPTIONAL: pin a model per role, independent
+    "reviewer": "opencode-go/kimi-k3"    // of which agent fills it. Absent = use the
+  },                                     // agent's own model. camelStream seats must
+                                         // stay unset: that endpoint serves a fleet
+                                         // and only accepts `auto`.
   "roundtable": {
     "rounds": 2,                         // 1 = independent takes only; 2+ = rebuttal rounds
     "on_spec": true, "on_plan": true, "on_tasks": true,
