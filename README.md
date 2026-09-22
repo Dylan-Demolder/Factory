@@ -329,7 +329,7 @@ Markdown is rendered safely.
 
 ![Roundtables & files](docs/images/artifacts.png)
 
-**Agents.** Your configured agents and their roles, the roundtable panel and personas, and your limits. **Check all agents** runs `doctor` from the browser.
+**Org chart.** Your agents laid out as an org: departments derived from the five pipeline roles, the roundtable seats, and a pool for everyone unassigned. **Drag a card onto a department** to make that agent fill the role (a valid drop labels itself — *"Make `oc-qa` the reviewer"*; an invalid one explains why, such as an `openai`-type agent not being allowed to build). Cards also drag between seats to reorder the panel, and onto the pool to unassign. Every change is undoable (`Cmd/Ctrl+Z`), clicking a card opens a drawer to edit its connection settings and job title, and the roundtable header shows the cost of your panel live (`3 seat(s) × 2 round(s) + 1 = 7 agent calls per table`). Saving validates first and highlights any offending field inline. **Check all agents** runs `doctor` from the browser.
 
 **Mobile.** The sidebar becomes a menu, and everything stacks so you can check a build or answer an interview question from your phone.
 
@@ -550,6 +550,7 @@ All endpoints are under `<base-path>/api/`, take and return JSON, and require au
 | `GET /projects/{id}/artifacts` | | `{artifacts: [{path, group, size, modified}]}` |
 | `GET /projects/{id}/artifact` | `?path=…` (from the list) | `{path, content, truncated}` |
 | `GET /config` | | Agents (no secrets), roles, roundtable, limits |
+| `PUT /config` | `{config, meta}` | `{ok}`, or `400 {error, fields: [{field, message}]}` naming the input at fault |
 | `POST /doctor` | | `{results: [{name, ok, reply, error, duration}]}` |
 
 Example: drive a whole interview with curl:
@@ -603,6 +604,10 @@ curl -s -H "Authorization: Bearer $T" -H 'Content-Type: application/json' -d '{"
 ```
 
 Unknown keys are rejected, so typos surface straight away. Validation also catches roles that point at missing agents, and an `openai` agent used as the builder.
+
+**`org.json`** sits beside `factory.json` and holds the human metadata the org chart shows — `title`, `dept`, `tier`, `notes`, `readonly` per agent. It is a separate file precisely because of the rule above: a job title is not factory's business, and `DisallowUnknownFields` would reject it. The web editor, the terminal workspace and the `factory-agents` helper all read and write this one shape.
+
+**Writing either file:** saves go through `config.Save`, which validates before touching the disk, writes atomically under a lock shared with `factory-agents`, preserves `{{config_dir}}` placeholders (the raw document is written, not the parsed one), and treats a withheld `env` value as "unchanged" rather than blanking it.
 
 **Notifications.** `notify_command` runs with `FACTORY_PROJECT`, `FACTORY_STATUS`, `FACTORY_MESSAGE` and `FACTORY_DIR` set. For example, with ntfy:
 
