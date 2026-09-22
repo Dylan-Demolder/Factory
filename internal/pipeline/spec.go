@@ -25,7 +25,7 @@ func (e *Engine) Spec(ctx context.Context) error {
 	p := e.P
 	cfg := e.Cfg
 	if strings.TrimSpace(p.Idea) == "" {
-		idea, err := e.UI.Ask("Describe what you want to build (who it's for, what it should do). Finish with an empty line.")
+		idea, err := e.UI.Ask("Describe what you want to build: who it's for and what it should do.")
 		if err != nil && err != io.EOF {
 			return err
 		}
@@ -52,7 +52,7 @@ func (e *Engine) Spec(ctx context.Context) error {
 		if len(reply.Questions) == 0 {
 			break
 		}
-		e.UI.Say("\nA few questions (empty line = no preference, /done = skip to the spec):")
+		e.UI.Say("\nA few questions. Leave an answer empty for \"no preference\", or answer /done to skip straight to the spec.")
 		for i, q := range reply.Questions {
 			ans, err := e.UI.Ask(fmt.Sprintf("[%d/%d] %s", i+1, len(reply.Questions), q), "/done")
 			if strings.TrimSpace(ans) == "/done" || (err == io.EOF && ans == "") {
@@ -120,7 +120,7 @@ func (e *Engine) Spec(ctx context.Context) error {
 			}
 		} else {
 			e.printSpecSummary(data)
-			ans, err := e.UI.Ask("Approve the spec? Type 'y' to approve and hand off, or describe what to change (finish with an empty line).", "y", "yes")
+			ans, err := e.UI.Ask("Approve the spec? Answer 'y' to approve and hand off, or describe what to change.", "y", "yes")
 			if err != nil && err != io.EOF {
 				return err
 			}
@@ -163,23 +163,23 @@ func (e *Engine) Spec(ctx context.Context) error {
 }
 
 func (e *Engine) printSpecSummary(d state.SpecData) {
-	e.UI.Say("\n══ Spec: %s ══", filepath.Join(e.root(), "SPEC.md"))
-	e.UI.Say("%s\n", d.Summary)
-	e.UI.Say("Use cases:")
+	var b strings.Builder
+	fmt.Fprintf(&b, "══ Spec: %s ══\n%s\n\nUse cases:\n", filepath.Join(e.root(), "SPEC.md"), d.Summary)
 	for _, u := range d.UseCases {
-		e.UI.Say("  %s  %s — %s", u.ID, u.Actor, u.Goal)
+		fmt.Fprintf(&b, "  %s  %s — %s\n", u.ID, u.Actor, u.Goal)
 	}
-	e.UI.Say("Features:")
+	b.WriteString("Features:\n")
 	for _, f := range d.Features {
-		e.UI.Say("  %s  %s", f.ID, f.Title)
+		fmt.Fprintf(&b, "  %s  %s\n", f.ID, f.Title)
 	}
 	if d.Stack != "" {
-		e.UI.Say("Stack: %s", d.Stack)
+		fmt.Fprintf(&b, "Stack: %s\n", d.Stack)
 	}
 	if d.TestCommand != "" {
-		e.UI.Say("Tests: %s", d.TestCommand)
+		fmt.Fprintf(&b, "Tests: %s\n", d.TestCommand)
 	}
-	e.UI.Say("(Read the full spec in SPEC.md before approving.)")
+	b.WriteString("(Read the full spec in SPEC.md before approving.)")
+	e.UI.Say("\n%s", b.String())
 }
 
 func (e *Engine) specCall(ctx context.Context, agentName, stage, prompt string) (string, state.SpecData, error) {

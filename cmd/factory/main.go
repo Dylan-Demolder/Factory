@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"github.com/dylan-demolder/factory-/internal/agent"
+	"github.com/dylan-demolder/factory-/internal/app"
 	"github.com/dylan-demolder/factory-/internal/config"
-	"github.com/dylan-demolder/factory-/internal/pipeline"
 	"github.com/dylan-demolder/factory-/internal/proc"
 	"github.com/dylan-demolder/factory-/internal/state"
 	"github.com/dylan-demolder/factory-/internal/ui"
@@ -39,6 +39,14 @@ Usage:
   factory status [dir]                 show progress
   factory logs [dir]                   print the run log
   factory stop [dir]                   stop a detached run (resume later with run)
+  factory serve [flags]                web interface for creating, speccing and controlling projects
+      --addr HOST:PORT  listen address (default 127.0.0.1:7700)
+      --workspace DIR   where projects live (default ~/factory-projects)
+      --token TOKEN     access token (default $FACTORY_TOKEN, else generated and saved)
+      --base-path P     serve under a URL prefix, e.g. /factory, behind a reverse proxy
+      --allow-origin O  allow cross-origin API calls from O (repeatable)
+      --frame-ancestors S  who may embed the UI in an iframe (CSP; default 'self')
+      --tls-cert F --tls-key F  serve HTTPS directly
 
 Global flag: --config PATH (default: $FACTORY_CONFIG, <dir>/.factory/config.json,
 ./factory.json, ~/.config/factory/factory.json)
@@ -71,6 +79,8 @@ func main() {
 		err = cmdLogs(args)
 	case "stop":
 		err = cmdStop(args)
+	case "serve":
+		err = cmdServe(ctx, args)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:
@@ -107,34 +117,6 @@ func projectDir(pos []string) (string, error) {
 		dir = pos[0]
 	}
 	return filepath.Abs(dir)
-}
-
-type project struct {
-	cfg     *config.Config
-	cfgPath string
-	store   *state.Store
-	p       *state.Project
-}
-
-func openProject(dir, cfgFlag string) (*project, error) {
-	store := &state.Store{Root: dir}
-	p, err := store.Load()
-	if err != nil {
-		return nil, err
-	}
-	cfg, path, err := config.Resolve(cfgFlag, dir)
-	if err != nil {
-		return nil, err
-	}
-	return &project{cfg: cfg, cfgPath: path, store: store, p: p}, nil
-}
-
-func (pr *project) engine(out io.Writer) (*pipeline.Engine, error) {
-	agents, err := agent.NewAll(pr.cfg)
-	if err != nil {
-		return nil, err
-	}
-	return pipeline.New(pr.cfg, agents, pr.store, pr.p, out), nil
 }
 
 func cmdInit(args []string) error {
@@ -235,26 +217,10 @@ func cmdNew(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	store := &state.Store{Root: dir}
-	if store.Exists() {
-		return fmt.Errorf("%s is already a factory project; use `factory spec %s` or `factory run %s`", dir, dir, dir)
-	}
-	if err := os.MkdirAll(store.Dir(), 0o755); err != nil {
-		return err
-	}
-	// Snapshot the config so detached and resumed runs use the same setup.
-	raw, err := os.ReadFile(cfgPath)
+	pr, err := app.Create(dir, name, *idea, cfg, cfgPath)
 	if err != nil {
 		return err
 	}
-	if err := store.Write("config.json", strings.ReplaceAll(string(raw), "{{config_dir}}", cfg.Dir)); err != nil {
-		return err
-	}
-	p := &state.Project{Name: name, Idea: strings.TrimSpace(*idea), Phase: state.PhaseSpec, Created: time.Now().UTC()}
-	if err := store.Save(p); err != nil {
-		return err
-	}
-	pr := &project{cfg: cfg, cfgPath: store.Path("config.json"), store: store, p: p}
 	fmt.Printf("Created project %s in %s\n", name, dir)
 	return specAndMaybeRun(ctx, pr, !*noRun)
 }
@@ -270,28 +236,27 @@ func cmdSpec(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	pr, err := openProject(dir, *cfgFlag)
+	pr, err := app.Open(dir, *cfgFlag)
 	if err != nil {
 		return err
 	}
-	if pid := pr.store.Pid(); proc.Alive(pid) {
+	if pid, ok := pr.Running(); ok {
 		return fmt.Errorf("a build is running (pid %d); `factory stop` it first", pid)
 	}
-	if pr.p.Phase != state.PhaseSpec {
-		fmt.Printf("Project is in phase %q. Re-opening the spec discards the current plan and task progress (code and git history are kept).\n", pr.p.Phase)
+	if pr.P.Phase != state.PhaseSpec {
+		fmt.Printf("Project is in phase %q. Re-opening the spec discards the current plan and task progress (code and git history are kept).\n", pr.P.Phase)
 		if !ui.New(os.Stdin, os.Stdout).Confirm("Continue?", false) {
 			return nil
 		}
-		pr.p.Phase = state.PhaseSpec
-		pr.p.Tasks = nil
-		pr.p.AcceptanceRound = 0
-		pr.p.Outcome = ""
+		if err := pr.ResetForSpec(); err != nil {
+			return err
+		}
 	}
 	return specAndMaybeRun(ctx, pr, true)
 }
 
-func specAndMaybeRun(ctx context.Context, pr *project, offerRun bool) error {
-	e, err := pr.engine(os.Stdout)
+func specAndMaybeRun(ctx context.Context, pr *app.Project, offerRun bool) error {
+	e, err := pr.Engine(os.Stdout)
 	if err != nil {
 		return err
 	}
@@ -300,11 +265,11 @@ func specAndMaybeRun(ctx context.Context, pr *project, offerRun bool) error {
 	if err := e.Spec(ctx); err != nil {
 		return err
 	}
-	fmt.Printf("\nSpec approved and committed: %s\n", filepath.Join(pr.store.Root, "SPEC.md"))
+	fmt.Printf("\nSpec approved and committed: %s\n", filepath.Join(pr.Store.Root, "SPEC.md"))
 	if offerRun && prompter.Confirm("Start the autonomous build now, in the background?", true) {
 		return detach(pr)
 	}
-	fmt.Printf("Start it later with: factory run %s --detach\n", pr.store.Root)
+	fmt.Printf("Start it later with: factory run %s --detach\n", pr.Store.Root)
 	return nil
 }
 
@@ -320,52 +285,33 @@ func cmdRun(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	pr, err := openProject(dir, *cfgFlag)
+	pr, err := app.Open(dir, *cfgFlag)
 	if err != nil {
 		return err
 	}
-	if pid := pr.store.Pid(); pid != os.Getpid() && proc.Alive(pid) {
+	if pid, ok := pr.Running(); ok && pid != os.Getpid() {
 		return fmt.Errorf("already running (pid %d)", pid)
 	}
 	if *detachFlag {
 		return detach(pr)
 	}
-	if err := pr.store.WritePid(os.Getpid()); err != nil {
+	if err := pr.Store.WritePid(os.Getpid()); err != nil {
 		return err
 	}
-	defer pr.store.ClearPid()
-	e, err := pr.engine(os.Stdout)
+	defer pr.Store.ClearPid()
+	e, err := pr.Engine(os.Stdout)
 	if err != nil {
 		return err
 	}
 	return e.Run(ctx)
 }
 
-func detach(pr *project) error {
-	exe, err := os.Executable()
+func detach(pr *app.Project) error {
+	pid, err := pr.StartRun("")
 	if err != nil {
 		return err
 	}
-	logPath := pr.store.Path("run.log")
-	logf, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer logf.Close()
-	cmd := exec.Command(exe, "run", pr.store.Root, "--config", pr.cfgPath)
-	cmd.Stdout = logf
-	cmd.Stderr = logf
-	cmd.Dir = pr.store.Root
-	proc.Detach(cmd)
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	pid := cmd.Process.Pid
-	if err := pr.store.WritePid(pid); err != nil {
-		return err
-	}
-	cmd.Process.Release()
-	fmt.Printf("Build running in the background (pid %d).\n  progress: factory status %s\n  log:      tail -f %s\n", pid, pr.store.Root, logPath)
+	fmt.Printf("Build running in the background (pid %d).\n  progress: factory status %s\n  log:      tail -f %s\n", pid, pr.Store.Root, pr.Store.Path("run.log"))
 	return nil
 }
 
@@ -452,13 +398,9 @@ func cmdStop(args []string) error {
 	if err != nil {
 		return err
 	}
-	store := &state.Store{Root: dir}
-	pid := store.Pid()
-	if !proc.Alive(pid) {
-		store.ClearPid()
-		return errors.New("no build is running")
-	}
-	if err := proc.Terminate(pid); err != nil {
+	pr := &app.Project{Store: &state.Store{Root: dir}}
+	pid, _ := pr.Running()
+	if err := pr.Stop(); err != nil {
 		return err
 	}
 	fmt.Printf("Sent stop to pid %d; progress is saved. Resume with: factory run %s --detach\n", pid, dir)

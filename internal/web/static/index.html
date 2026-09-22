@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>factory</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234f46e5'/%3E%3Cpath d='M7 24V13l6 4v-4l6 4v-4l6 4v7z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<div id="login" class="overlay" hidden>
+  <form id="login-form" class="card login-card">
+    <div class="brand big"><span class="logo"></span>factory</div>
+    <p class="muted">Enter the access token printed by <code>factory serve</code>.</p>
+    <input id="login-token" type="password" autocomplete="current-password" placeholder="Access token" required>
+    <button class="btn primary" type="submit">Sign in</button>
+    <p id="login-error" class="error-text" hidden></p>
+  </form>
+</div>
+
+<header class="topbar">
+  <button id="menu-btn" class="icon-btn only-mobile" aria-label="Projects">☰</button>
+  <a href="#/" class="brand"><span class="logo"></span>factory</a>
+  <nav class="top-actions">
+    <a href="#/new" class="btn primary small">+ New project</a>
+    <a href="#/agents" class="btn ghost small">Agents</a>
+    <button id="logout-btn" class="btn ghost small" hidden>Sign out</button>
+  </nav>
+</header>
+
+<div class="layout">
+  <aside id="sidebar" class="sidebar">
+    <div class="sidebar-head">Projects</div>
+    <div id="project-list" class="project-list"><p class="muted pad">Loading…</p></div>
+    <div id="workspace" class="workspace muted"></div>
+  </aside>
+  <main id="main" class="main"></main>
+</div>
+<div id="toast" class="toast" hidden></div>
+</body>
+</html>
