@@ -91,12 +91,17 @@ type Limits struct {
 }
 
 type Config struct {
-	Agents        map[string]Agent `json:"agents"`
-	Roles         Roles            `json:"roles"`
-	Roundtable    Roundtable       `json:"roundtable"`
-	Limits        Limits           `json:"limits"`
-	TestCommand   string           `json:"test_command,omitempty"`
-	NotifyCommand string           `json:"notify_command,omitempty"`
+	Agents map[string]Agent `json:"agents"`
+	Roles  Roles            `json:"roles"`
+	// RoleModels optionally pins a model per seat, independent of which
+	// agent fills it: {"reviewer": "opencode-go/kimi-k3"}. Absent or empty
+	// means "use the agent's own model". camelStream seats stay on `auto` —
+	// that endpoint serves a fleet and does not accept a pinned model.
+	RoleModels    map[string]string `json:"role_models,omitempty"`
+	Roundtable    Roundtable        `json:"roundtable"`
+	Limits        Limits            `json:"limits"`
+	TestCommand   string            `json:"test_command,omitempty"`
+	NotifyCommand string            `json:"notify_command,omitempty"`
 
 	// Dir is the directory the config was loaded from ({{config_dir}}).
 	Dir string `json:"-"`
@@ -286,6 +291,31 @@ func (c *Config) validate() []FieldError {
 	check("roles.moderator", "moderator", c.Roles.Moderator)
 	if b, ok := c.Agents[c.Roles.Builder]; ok && b.Type == "openai" {
 		fail("roles.builder", "role builder: agent %q is type openai and cannot edit files; use opencode or a command agent", c.Roles.Builder)
+	}
+	for role, model := range c.RoleModels {
+		field := "role_models." + role
+		if !IsRole(role) {
+			fail(field, "role_models.%s: unknown role (want %s)", role, strings.Join(RoleNames, ", "))
+			continue
+		}
+		if strings.TrimSpace(model) == "" {
+			fail(field, "role_models.%s: model is empty; remove the entry to use the agent's model", role)
+			continue
+		}
+		agentName := c.Role(role)
+		if agentName == "" {
+			continue // the roles check above already reported the empty seat
+		}
+		a, ok := c.Agents[agentName]
+		if !ok {
+			continue // the roles check above already reported the unknown agent
+		}
+		// A command agent receives the model only through {{model}}; without
+		// it the override would be accepted and then quietly do nothing.
+		if a.Type == "command" && !wantsModelPlaceholder(a.Args) {
+			fail(field, "role_models.%s: agent %q is type command, so its args must contain {{model}} for a model choice to take effect",
+				role, agentName)
+		}
 	}
 	for i, p := range c.Roundtable.Participants {
 		role := fmt.Sprintf("roundtable.participants[%d]", i)

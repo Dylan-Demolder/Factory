@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/dylan-demolder/factory/internal/agent"
+	"github.com/dylan-demolder/factory/internal/config"
 	"github.com/dylan-demolder/factory/internal/extract"
 	"github.com/dylan-demolder/factory/internal/state"
 )
@@ -44,7 +45,7 @@ func (e *Engine) Spec(ctx context.Context) error {
 			Questions []string `json:"questions"`
 			Ready     bool     `json:"ready"`
 		}
-		if _, err := e.callJSON(ctx, cfg.Roles.Interviewer, agent.Request{
+		if _, err := e.callRoleJSON(ctx, config.RoleInterviewer, agent.Request{
 			Stage: "interview", System: interviewSystem(), Prompt: interviewPrompt(p, round, cfg.Limits.MaxInterviewRounds), ReadOnly: true,
 		}, &reply); err != nil {
 			return err
@@ -75,7 +76,7 @@ func (e *Engine) Spec(ctx context.Context) error {
 
 	// 2. Draft.
 	e.UI.Say("\n… drafting the spec")
-	md, data, err := e.specCall(ctx, cfg.Roles.Interviewer, "spec-draft", draftSpecPrompt(p))
+	md, data, err := e.specCall(ctx, config.RoleInterviewer, "spec-draft", draftSpecPrompt(p))
 	if err != nil {
 		return err
 	}
@@ -83,7 +84,7 @@ func (e *Engine) Spec(ctx context.Context) error {
 	// 3. Roundtable review of the draft.
 	if cfg.Roundtable.SpecEnabled() {
 		e.UI.Say("… the roundtable is reviewing the draft (use cases, scope, testability)")
-		out, err := e.Roundtable(ctx, "spec", specRoundtableTopic, md, cfg.Roles.Moderator, specSynthesis(p))
+		out, err := e.Roundtable(ctx, "spec", specRoundtableTopic, md, config.RoleModerator, specSynthesis(p))
 		if err != nil {
 			return err
 		}
@@ -139,7 +140,7 @@ func (e *Engine) Spec(ctx context.Context) error {
 		}
 		e.save()
 		e.UI.Say("\n… revising the spec")
-		m2, d2, err := e.specCall(ctx, cfg.Roles.Interviewer, "spec-revise", reviseSpecPrompt(p, md, strings.Join(feedback, "\n\n")))
+		m2, d2, err := e.specCall(ctx, config.RoleInterviewer, "spec-revise", reviseSpecPrompt(p, md, strings.Join(feedback, "\n\n")))
 		if err != nil {
 			return err
 		}
@@ -182,8 +183,8 @@ func (e *Engine) printSpecSummary(d state.SpecData) {
 	e.UI.Say("\n%s", b.String())
 }
 
-func (e *Engine) specCall(ctx context.Context, agentName, stage, prompt string) (string, state.SpecData, error) {
-	out, err := e.call(ctx, agentName, agent.Request{Stage: stage, System: interviewSystem(), Prompt: prompt, ReadOnly: true})
+func (e *Engine) specCall(ctx context.Context, role, stage, prompt string) (string, state.SpecData, error) {
+	out, err := e.callRole(ctx, role, agent.Request{Stage: stage, System: interviewSystem(), Prompt: prompt, ReadOnly: true})
 	if err != nil {
 		return "", state.SpecData{}, err
 	}
@@ -192,7 +193,7 @@ func (e *Engine) specCall(ctx context.Context, agentName, stage, prompt string) 
 		return md, data, nil
 	}
 	e.logf("  spec output unparseable (%v); asking again", perr)
-	out, err = e.call(ctx, agentName, agent.Request{
+	out, err = e.callRole(ctx, role, agent.Request{
 		Stage: stage + "-repair", System: interviewSystem(), ReadOnly: true,
 		Prompt: prompt + "\n\n---\nYour previous reply was missing a valid ```json block (" + perr.Error() + "). Reply again in the exact required format.",
 	})

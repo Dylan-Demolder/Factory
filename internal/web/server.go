@@ -788,16 +788,31 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Slice(agents, func(i, j int) bool { return agents[i].Name < agents[j].Name })
 	writeJSON(w, map[string]any{
-		"path":           path,
-		"editable":       true,
-		"agents":         agents,
-		"roles":          cfg.Roles,
-		"roundtable":     cfg.Roundtable,
-		"limits":         cfg.Limits,
-		"test_command":   cfg.TestCommand,
-		"notify_command": cfg.NotifyCommand,
-		"notify":         cfg.NotifyCommand != "",
+		"path":             path,
+		"editable":         true,
+		"agents":           agents,
+		"roles":            cfg.Roles,
+		"role_models":      cfg.RoleModels,
+		"effective_models": effectiveModels(cfg),
+		"roundtable":       cfg.Roundtable,
+		"limits":           cfg.Limits,
+		"test_command":     cfg.TestCommand,
+		"notify_command":   cfg.NotifyCommand,
+		"notify":           cfg.NotifyCommand != "",
 	})
+}
+
+// effectiveModels is what each seat will actually run: its role_models
+// override if it has one, otherwise its agent's model. Editors show this so a
+// seat with no override still reads as a concrete model rather than blank.
+func effectiveModels(cfg *config.Config) map[string]string {
+	out := make(map[string]string, len(config.RoleNames))
+	for _, role := range config.RoleNames {
+		if m := cfg.EffectiveModel(role); m != "" {
+			out[role] = m
+		}
+	}
+	return out
 }
 
 func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {

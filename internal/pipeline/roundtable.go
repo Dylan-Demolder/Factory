@@ -20,6 +20,9 @@ import (
 //
 // The full transcript is saved to .factory/roundtables/. It returns the
 // moderator's output.
+//
+// moderator names a pipeline *role*, not an agent, so that seat's model
+// override (role_models) applies to the synthesis.
 func (e *Engine) Roundtable(ctx context.Context, slug, topic, material, moderator, synthesis string) (string, error) {
 	parts := e.Cfg.Roundtable.Participants
 	rounds := e.Cfg.Roundtable.Rounds
@@ -76,7 +79,7 @@ func (e *Engine) Roundtable(ctx context.Context, slug, topic, material, moderato
 	if len(parts) == 0 {
 		discussion.WriteString("(no panel configured — use your own judgement)\n")
 	}
-	final, err := e.call(ctx, moderator, agent.Request{
+	final, err := e.callRole(ctx, moderator, agent.Request{
 		Stage:    "roundtable-" + slug + "-synthesis",
 		System:   "You moderate a product team roundtable and turn the discussion into a decision.",
 		Prompt:   fmt.Sprintf("## Topic\n%s\n\n## Material\n%s\n\n## Final positions of the panel\n%s\n## Your job\n%s", topic, material, discussion.String(), synthesis),
@@ -85,7 +88,7 @@ func (e *Engine) Roundtable(ctx context.Context, slug, topic, material, moderato
 	if err != nil {
 		return "", fmt.Errorf("roundtable %s: moderator: %w", slug, err)
 	}
-	fmt.Fprintf(&log, "## Moderator synthesis (%s)\n\n%s\n", moderator, final)
+	fmt.Fprintf(&log, "## Moderator synthesis (%s)\n\n%s\n", e.roleLabel(moderator), final)
 	e.saveTranscript(slug, log.String())
 	return final, nil
 }

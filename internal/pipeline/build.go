@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dylan-demolder/factory/internal/agent"
+	"github.com/dylan-demolder/factory/internal/config"
 	"github.com/dylan-demolder/factory/internal/proc"
 	"github.com/dylan-demolder/factory/internal/state"
 )
@@ -97,7 +98,7 @@ func (e *Engine) runTask(ctx context.Context, t *state.Task) error {
 	e.logf("▶ %s: %s", t.ID, t.Title)
 
 	if t.Brief == "" && cfg.Roundtable.TasksEnabled() {
-		brief, err := e.Roundtable(ctx, "task-"+t.ID, taskRoundtableTopic(t), taskMaterial(e.P, t, e.files(300)), cfg.Roles.Moderator, taskSynthesis)
+		brief, err := e.Roundtable(ctx, "task-"+t.ID, taskRoundtableTopic(t), taskMaterial(e.P, t, e.files(300)), config.RoleModerator, taskSynthesis)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -113,9 +114,9 @@ func (e *Engine) runTask(ctx context.Context, t *state.Task) error {
 	for t.Attempts < cfg.Limits.MaxTaskAttempts {
 		t.Attempts++
 		e.save()
-		e.logf("  attempt %d/%d: building with %s", t.Attempts, cfg.Limits.MaxTaskAttempts, cfg.Roles.Builder)
+		e.logf("  attempt %d/%d: building with %s", t.Attempts, cfg.Limits.MaxTaskAttempts, e.roleLabel(config.RoleBuilder))
 
-		summary, err := e.call(ctx, cfg.Roles.Builder, agent.Request{
+		summary, err := e.callRole(ctx, config.RoleBuilder, agent.Request{
 			Stage: "build", System: builderSystem(), Prompt: buildPrompt(e.P, t),
 		})
 		if err != nil {
@@ -138,7 +139,7 @@ func (e *Engine) runTask(ctx context.Context, t *state.Task) error {
 			t.LastFeedback = fmt.Sprintf("The test suite failed (`%s`, exit code %d). Output (tail):\n%s", e.P.TestCommand, tr.ExitCode, fence("", tr.Output))
 			continue
 		}
-		e.logf("  tests passed in %s; reviewing with %s", tr.Duration.Round(time.Second), cfg.Roles.Reviewer)
+		e.logf("  tests passed in %s; reviewing with %s", tr.Duration.Round(time.Second), e.roleLabel(config.RoleReviewer))
 
 		stat, diff := e.stagedDiff(diffLimit)
 		if strings.TrimSpace(stat) == "" {
@@ -149,7 +150,7 @@ func (e *Engine) runTask(ctx context.Context, t *state.Task) error {
 			Issues  []string `json:"issues"`
 			Summary string   `json:"summary"`
 		}
-		raw, err := e.callJSON(ctx, cfg.Roles.Reviewer, agent.Request{
+		raw, err := e.callRoleJSON(ctx, config.RoleReviewer, agent.Request{
 			Stage: "review", System: reviewerSystem(), Prompt: reviewPrompt(e.P, t, tr, stat, diff), ReadOnly: true,
 		}, &verdict)
 		e.Store.Write(fmt.Sprintf("tasks/%s-attempt-%d-review.md", t.ID, t.Attempts), raw)
