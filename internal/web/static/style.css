@@ -95,12 +95,38 @@ h1 { font-size: 22px; } h2 { font-size: 17px; } h3 { font-size: 15px; }
 .sidebar-head { padding: 14px 16px 6px; font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .project-list { overflow-y: auto; flex: 1; padding: 4px 8px; }
 .workspace { font-size: 11.5px; padding: 10px 16px; border-top: 1px solid var(--border); word-break: break-all; }
-.project-item { display: block; padding: 10px 10px; border-radius: 8px; color: var(--text); margin-bottom: 2px; }
+/* a wrapper per row so the delete button can be a sibling of the link */
+.project-row { position: relative; }
+.project-row:hover .project-item { background: var(--panel-2); }
+.project-item { display: block; padding: 10px 34px 10px 10px; border-radius: 8px; color: var(--text); margin-bottom: 2px; }
 .project-item:hover { background: var(--panel-2); }
 .project-item.active { background: var(--accent-soft); }
 .project-item .row { display: flex; align-items: center; gap: 8px; }
 .project-item .name { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.project-item .meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.project-item .meta { font-size: 12px; color: var(--muted); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-del {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%); z-index: 1;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  color: var(--muted); font-size: 13px; line-height: 1; padding: 5px 7px; cursor: pointer;
+}
+.project-del:hover { color: var(--bad); border-color: var(--bad); }
+.project-del:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* Visible by default so touch always has it; only hover-capable pointers hide
+   it idle — and keyboard focus brings it back via focus-within. */
+@media (hover: hover) and (pointer: fine) {
+  .project-del { opacity: 0; pointer-events: none; }
+  .project-row:hover .project-del, .project-row:focus-within .project-del { opacity: 1; pointer-events: auto; }
+}
+
+/* destructive confirm dialog */
+.app-dialog { z-index: 66; background: rgba(15, 17, 23, .45); }
+.dialog-card { width: min(440px, 100%); text-align: left; }
+.dialog-card h2 { margin-bottom: 8px; font-size: 16.5px; }
+.dlg-body p { margin: 0 0 8px; }
+.dlg-body p:last-child { margin-bottom: 0; }
+.dlg-warn { color: var(--warn); font-weight: 650; }
+.dlg-keys { font-size: 12.5px; margin-top: 10px; }
+.dlg-actions { justify-content: flex-end; margin-top: 14px; }
 .main { flex: 1; min-width: 0; padding: 24px 28px 60px; }
 
 /* pills, dots */
@@ -349,4 +375,26 @@ input.dirty, select.dirty, textarea.dirty { box-shadow: inset 3px 0 0 var(--acce
   .oc-assign { width: 100%; }
   .oc-seat { min-width: 0; max-width: none; }
   .oc-zone.wide .oc-card { max-width: none; }
+}
+
+/* per-role model pins (one control per role zone) */
+.oc-model { margin-top: 2px; }
+.oc-model-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.oc-model-chip { font-size: 10.5px; font-weight: 750; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); background: var(--panel-2); border: 1px solid var(--border); border-radius: 99px; padding: 1px 8px; white-space: nowrap; }
+.oc-model-chip.pinned { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+.oc-model-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+.oc-model-row select { flex: 1 1 150px; min-width: 0; width: auto; font-size: 12.5px; padding: 6px 8px; }
+/* the Custom… (or fallback) text box gets its own full-width line under the picker */
+.oc-model-row input { flex: 1 0 100%; width: 100%; font-size: 12.5px; padding: 6px 8px; }
+.oc-model-row select:disabled, .oc-model-row input:disabled { background: var(--panel-2); color: var(--muted); cursor: not-allowed; }
+.oc-model-row .ferr { flex: 1 0 100%; margin-top: 0; }
+.oc-model-x { flex-shrink: 0; font-size: 17px; padding: 1px 6px; line-height: 1.1; color: var(--muted); }
+.oc-model-x:hover { color: var(--bad); }
+.oc-model-notes { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); margin-top: 5px; }
+.oc-model-notes code { white-space: nowrap; }
+.oc-model-warns { background: var(--warn-soft); border: 1px solid var(--warn); color: var(--warn); border-radius: var(--radius); padding: 8px 12px; font-size: 12.5px; margin-bottom: 12px; }
+.oc-model-warns > div + div { margin-top: 3px; }
+
+@media (max-width: 860px) {
+  .oc-model-row select, .oc-model-row input { flex-basis: 100%; }
 }

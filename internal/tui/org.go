@@ -1,8 +1,8 @@
 package tui
 
-// The org chart editor: which agent fills each role, who sits on the
-// roundtable, and each agent's human metadata. It edits two files through
-// config.Save and never writes anything itself.
+// The org chart editor: which agent fills each role, which model each role
+// pins, who sits on the roundtable, and each agent's human metadata. It edits
+// two files through config.Save and never writes anything itself.
 //
 // The document being edited is the *raw* config (map[string]any straight off
 // disk), not the parsed *config.Config: Parse expands {{config_dir}} in args
@@ -12,12 +12,15 @@ package tui
 // roles).
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -48,15 +51,18 @@ type orgLoadedMsg struct {
 	doc  map[string]any
 	meta map[string]config.Meta
 	err  error
+
+	available     []string // model catalogue from `opencode models`
+	availableNote string   // set when the catalogue could not be fetched
 }
 
 // orgSavedMsg is config.Save's verdict. A rejected document carries
 // per-field messages (roles.builder, agents.x.model, …) via config.Fields.
 type orgSavedMsg struct{ err error }
 
-// orgState is the editor's working set: three copies in memory (roles, panel,
-// agents) folded back into doc only when the user saves, so an abandoned
-// session never touches disk.
+// orgState is the editor's working set: four copies in memory (roles, role
+// models, panel, agents) folded back into doc only when the user saves, so an
+// abandoned session never touches disk.
 type orgState struct {
 	loaded bool
 	err    error
@@ -73,19 +79,31 @@ type orgState struct {
 	created     map[string]bool // added here: fresh objects under doc["agents"]
 	modelEdited map[string]bool // model typed over: written back on save
 
+	roleModels map[string]string // working copy of role_models: the pin per role; "" is never stored — the key is deleted
+
+	// available is the model catalogue opencode can actually serve, fetched
+	// once when the screen loads so pickers offer real options rather than
+	// only the models that happen to be configured already.
+	available     []string
+	availableNote string // why the catalogue is empty, when it is
+
 	cursor    int
 	dirty     bool
 	fieldErrs []config.FieldError
 
-	edit    *orgEdit    // inline text editor; nil when the list has focus
-	confirm *orgConfirm // pending y/n question; nil otherwise
+	edit    *orgEdit      // inline text editor; nil when the list has focus
+	confirm *orgConfirm   // pending y/n question; nil otherwise
+	pick    *orgModelPick // model picker open; nil otherwise
 }
 
-// typing reports that this screen owns the keyboard. Three states qualify:
+// typing reports that this screen owns the keyboard. Four states qualify:
 // an inline editor is open (keystrokes are text), a confirmation is pending
-// (y/n must not be read as navigation), and there are unsaved edits — so the
-// root's esc/1-4/q cannot whisk changes away without a word of warning.
-func (s orgState) typing() bool { return s.edit != nil || s.confirm != nil || s.dirty }
+// (y/n must not be read as navigation), the model picker is choosing (←/→
+// must not become a role swap), and there are unsaved edits — so the root's
+// esc/1-4/q cannot whisk changes away without a word of warning.
+func (s orgState) typing() bool {
+	return s.edit != nil || s.confirm != nil || s.pick != nil || s.dirty
+}
 
 // apply replaces the state with what was loaded, keeping the cursor where the
 // user left it. Loading is also how a discard undoes: the next visit re-reads
@@ -103,6 +121,7 @@ func (s *orgState) apply(msg orgLoadedMsg) {
 	}
 	s.loaded = true
 	s.path, s.cfg, s.doc, s.meta = msg.path, msg.cfg, msg.doc, msg.meta
+	s.available, s.availableNote = msg.available, msg.availableNote
 	if s.doc == nil {
 		s.doc = map[string]any{}
 	}
@@ -115,6 +134,10 @@ func (s *orgState) apply(msg orgLoadedMsg) {
 	s.agents = make(map[string]config.Agent, len(s.cfg.Agents))
 	for name, a := range s.cfg.Agents {
 		s.agents[name] = a
+	}
+	s.roleModels = make(map[string]string, len(s.cfg.RoleModels))
+	for role, model := range s.cfg.RoleModels {
+		s.roleModels[role] = model
 	}
 }
 
@@ -139,8 +162,40 @@ func (m Model) loadOrg() tea.Cmd {
 		if err := json.Unmarshal(raw, &doc); err != nil {
 			return orgLoadedMsg{err: fmt.Errorf("%s: %w", path, err)}
 		}
-		return orgLoadedMsg{cfg: cfg, path: path, doc: doc, meta: config.LoadMeta(path)}
+		ids, note := fetchOpencodeModels()
+		return orgLoadedMsg{
+			cfg: cfg, path: path, doc: doc, meta: config.LoadMeta(path),
+			available: ids, availableNote: note,
+		}
 	}
+}
+
+// fetchOpencodeModels asks opencode which models it can serve, so a picker
+// can be a real drop-down of available options instead of a text field. It
+// runs inside loadOrg's goroutine, never on the render path. A failure is a
+// note rather than an error: the screen still opens and pickers fall back to
+// the models already configured.
+func fetchOpencodeModels() (ids []string, note string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "opencode", "models").Output()
+	if err != nil {
+		return nil, "opencode models failed: " + err.Error()
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		id := strings.TrimSpace(line)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	if len(ids) == 0 {
+		return nil, "opencode models returned no models"
+	}
+	return ids, ""
 }
 
 // ---- rows ----
@@ -317,15 +372,19 @@ func (m Model) orgSaved(msg orgSavedMsg) (tea.Model, tea.Cmd) {
 }
 
 // orgKey hands the key to whichever part of the screen has focus. The inline
-// editor and pending confirmations take every key, so a global shortcut never
-// steals a keystroke mid-word (or a "y"). Every branch returns the model it
-// mutated: these are value receivers, and dropping the copy would drop the edit.
+// editor, pending confirmations and the model picker take every key, so a
+// global shortcut never steals a keystroke mid-word (or a "y"). Every branch
+// returns the model it mutated: these are value receivers, and dropping the
+// copy would drop the edit.
 func (m Model) orgKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.org.edit != nil {
 		return m.orgEditKey(km)
 	}
 	if m.org.confirm != nil {
 		return m.orgConfirmKey(km)
+	}
+	if m.org.pick != nil {
+		return m.orgPickKey(km)
 	}
 	return m.orgListKey(km)
 }
@@ -334,6 +393,8 @@ func (m Model) orgKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 //
 //	↑↓ / jk   move the cursor      ←→ / hl   change the selected value
 //	⏎         edit the agent       p         edit a seat's persona
+//	m         pick a model from the catalogue — a role's pin, or an agent's
+//	          own model (role, pool and seat rows; ←/→ cycles the list)
 //	+         add a seat           x         remove the seat
 //	[ ] / shift+←→  reorder seats   a         new agent (on a seat: add one)
 //	d         delete the agent      s         save      esc  back out
@@ -368,6 +429,8 @@ func (m Model) orgListKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		cmd = s.openOrgEdit(row)
 	case "p":
 		cmd = s.openPersonaEdit(row)
+	case "m":
+		cmd = s.openModelPick(row)
 	case "+":
 		cmd = s.addSeat(row)
 	case "a":
@@ -461,6 +524,13 @@ func (s *orgState) cycleAgent(row orgRow, dir int) tea.Cmd {
 	s.assign(row, names[pick])
 	if skipped {
 		return sayStatus(openaiReason, true)
+	}
+	if row.kind == rowRole && s.roleModels[roleKeys[row.i]] != "" {
+		// The pin survived the swap; say now if the new agent cannot honor
+		// it — the save would only reject it later with the same reason.
+		if reason := s.pinBlock(row.i); reason != "" {
+			return sayStatus(reason, true)
+		}
 	}
 	return nil
 }
@@ -645,12 +715,14 @@ func (s *orgState) saveOrg() tea.Cmd {
 	return func() tea.Msg { return orgSavedMsg{err: config.Save(path, doc, meta)} }
 }
 
-// editedDoc writes the three working copies back into the raw document:
-// roles wholesale, participants under the existing roundtable object (so
-// rounds/on_spec survive), agents by add/remove per name. Pre-existing agent
-// objects are left alone except a model this editor changed — their args and
-// command still hold {{config_dir}}, and rewriting them from the parsed form
-// would freeze absolute paths into the file.
+// editedDoc writes the working copies back into the raw document: roles
+// wholesale, role_models as the pin map (the key disappears when the last pin
+// is cleared — an empty override is invalid, and a config that never pinned
+// anything must round-trip byte-identically), participants under the existing
+// roundtable object (so rounds/on_spec survive), agents by add/remove per
+// name. Pre-existing agent objects are left alone except a model this editor
+// changed — their args and command still hold {{config_dir}}, and rewriting
+// them from the parsed form would freeze absolute paths into the file.
 func (s orgState) editedDoc() map[string]any {
 	doc := s.doc
 	if doc == nil {
@@ -664,6 +736,19 @@ func (s orgState) editedDoc() map[string]any {
 		}
 	}
 	doc["roles"] = roles
+
+	if len(s.roleModels) > 0 {
+		roleModels := make(map[string]any, len(s.roleModels))
+		for role, model := range s.roleModels {
+			roleModels[role] = model
+		}
+		doc["role_models"] = roleModels
+	} else {
+		// Clearing the last pin deletes the key rather than writing "": an
+		// empty override is invalid, and a config with no pins keeps its
+		// original shape — role_models stays absent, byte for byte.
+		delete(doc, "role_models")
+	}
 
 	rt, _ := doc["roundtable"].(map[string]any)
 	if rt == nil {
@@ -693,7 +778,13 @@ func (s orgState) editedDoc() map[string]any {
 			continue
 		}
 		if s.modelEdited[name] {
-			obj["model"] = a.Model
+			if a.Model == "" {
+				// omitempty semantics: an unset model is an absent key, not
+				// an empty string the reader would have to special-case.
+				delete(obj, "model")
+			} else {
+				obj["model"] = a.Model
+			}
 		}
 	}
 	return doc
@@ -716,12 +807,304 @@ func orgAgentObject(a config.Agent) map[string]any {
 	return obj
 }
 
+// ---- role models ----
+
+// orgModelPick is m's picker: a cycleable list of known models for one role,
+// walked with ←/→ and committed with enter. The first choice is always the
+// empty string — inherit, meaning "delete this seat's pin" — because an empty
+// pin is itself invalid: config.validate rejects "" outright.
+type orgModelPick struct {
+	role    int      // index into roleKeys; -1 when picking for an agent
+	agent   string   // agent name when role is -1
+	choices []string // "" (inherit/default) first, then the known models
+	sel     int      // index into choices
+}
+
+// openModelPick opens the picker on a role row or on an agent (a pooled or
+// seated one). On a role it sets the seat's pin; on an agent it sets that
+// agent's own model, which every seat using it inherits.
+//
+// Choices are the real catalogue for that agent's type where one exists
+// (opencode), so this behaves like a drop-down rather than a text field. Free
+// text still lives in the ⏎ editor: Claude/ChatGPT ids come from their CLIs
+// and cannot be enumerated.
+func (s *orgState) openModelPick(row orgRow) tea.Cmd {
+	if row.kind == rowRole {
+		if row.i >= len(roleKeys) {
+			return sayStatus("m picks a model for a role — select one of the five roles", true)
+		}
+		if reason := s.pinBlock(row.i); reason != "" {
+			return sayStatus(reason, true)
+		}
+		choices := s.modelChoices(row.i)
+		if len(choices) < 2 {
+			if s.availableNote != "" {
+				return sayStatus(s.availableNote+" — press ⏎ to type an id", true)
+			}
+			return sayStatus("no model ids to offer — press ⏎ and type one on the role model field", true)
+		}
+		sel := orgIndexOf(choices, s.roleModels[roleKeys[row.i]])
+		if sel < 0 {
+			sel = 0
+		}
+		s.pick = &orgModelPick{role: row.i, choices: choices, sel: sel}
+		return sayStatus("←/→ choose · ⏎ pin · esc cancel — other ids go through the ⏎ editor", false)
+	}
+
+	name := s.rowAgent(row)
+	if name == "" {
+		return sayStatus("no agent here — ←/→ picks one", true)
+	}
+	if reason := s.modelBlock(name); reason != "" {
+		return sayStatus(reason, true)
+	}
+	a := s.agents[name]
+	choices := s.availableModels(name)
+	if a.Type == "opencode" {
+		// "" means "use the engine default" — a real, savable value.
+		choices = append([]string{""}, choices...)
+	}
+	if len(choices) == 0 {
+		return sayStatus("no model ids to offer — press ⏎ and type one on the model field", true)
+	}
+	sel := orgIndexOf(choices, a.Model)
+	if sel < 0 {
+		// The current value was typed and isn't in the catalogue; keep it
+		// first so cycling can never silently drop it.
+		choices = append([]string{a.Model}, choices...)
+		sel = 0
+	}
+	s.pick = &orgModelPick{role: -1, agent: name, choices: choices, sel: sel}
+	return sayStatus("←/→ choose · ⏎ set · esc cancel — ids from the agent's CLI go through ⏎", false)
+}
+
+// orgPickKey drives the picker: ←/→ walk the list, enter (or m) pins the
+// highlighted choice — or clears the pin when it is the inherit entry — and
+// esc walks away with nothing changed. Everything else is ignored, exactly
+// like a pending confirmation, so no stray key commits by accident.
+func (m Model) orgPickKey(km tea.KeyMsg) (tea.Model, tea.Cmd) {
+	s := &m.org
+	p := s.pick
+	if p == nil || len(p.choices) == 0 {
+		return m, nil
+	}
+	var cmd tea.Cmd
+	switch km.String() {
+	case "left", "h":
+		p.sel = (p.sel - 1 + len(p.choices)) % len(p.choices)
+	case "right", "l":
+		p.sel = (p.sel + 1) % len(p.choices)
+	case "enter", "m":
+		s.pick = nil
+		if p.role < 0 {
+			cmd, _ = s.setAgentModel(p.agent, p.choices[p.sel])
+		} else {
+			cmd, _ = s.setRoleModel(p.role, p.choices[p.sel])
+		}
+	case "esc":
+		s.pick = nil
+	}
+	return m, cmd
+}
+
+// setRoleModel pins a role's model, or with an empty value unpins it. Both
+// hard constraints are refused here — before anything reaches the working
+// copy, and so before a save can even be attempted — with the exact fix in
+// the message. Unpinning is always allowed: it deletes the key rather than
+// storing "", because config.validate rejects an empty override.
+func (s *orgState) setRoleModel(i int, model string) (tea.Cmd, bool) {
+	if i < 0 || i >= len(roleKeys) {
+		return sayStatus("not a role row", true), false
+	}
+	role := roleKeys[i]
+	model = strings.TrimSpace(model)
+	if model == "" {
+		if _, pinned := s.roleModels[role]; !pinned {
+			return sayStatus(role+" already inherits its agent's model", false), true
+		}
+		delete(s.roleModels, role)
+		s.dirty = true
+		return sayStatus(role+" now inherits its agent's model — press s to save", false), true
+	}
+	if reason := s.pinBlock(i); reason != "" {
+		return sayStatus(reason, true), false
+	}
+	if s.roleModels[role] == model {
+		return sayStatus(role+" already pinned to "+model, false), true
+	}
+	if s.roleModels == nil {
+		s.roleModels = map[string]string{}
+	}
+	s.roleModels[role] = model
+	s.dirty = true
+	return sayStatus(role+" pinned to "+model+" — press s to save", false), true
+}
+
+// setAgentModel sets an agent's own model — independent of which roles it
+// holds, so every seat using that agent follows it. Unlike a role pin, an
+// empty value is legitimate: for opencode it means "use the engine default",
+// and the save path deletes the key rather than writing "".
+func (s *orgState) setAgentModel(name, model string) (tea.Cmd, bool) {
+	a, ok := s.agents[name]
+	if !ok {
+		return sayStatus("no such agent "+name, true), false
+	}
+	model = strings.TrimSpace(model)
+	if model == a.Model {
+		return sayStatus(name+" already uses "+modelLabel(model, a.Type), false), true
+	}
+	if model != "" {
+		if reason := s.modelBlock(name); reason != "" {
+			return sayStatus(reason, true), false
+		}
+	}
+	a.Model = model
+	s.agents[name] = a
+	if s.modelEdited == nil {
+		s.modelEdited = map[string]bool{}
+	}
+	s.modelEdited[name] = true
+	s.dirty = true
+	if model == "" {
+		return sayStatus(name+" now uses the engine default — press s to save", false), true
+	}
+	return sayStatus(name+" model set to "+model+" — press s to save", false), true
+}
+
+// modelLabel reads a model value for a status line.
+func modelLabel(model, agentType string) string {
+	if model != "" {
+		return model
+	}
+	if agentType == "opencode" {
+		return "the engine default"
+	}
+	return "(unset)"
+}
+
+// pinBlock is the one-line refusal for a role whose agent cannot honor a
+// pin, or "" when pinning is fine. camelStream serves a fleet and only
+// accepts auto; a command agent receives the model only through {{model}}, so
+// without the placeholder the choice would be accepted and then quietly
+// ignored — config.validate says the same at save time (field
+// role_models.<role>, pinned to this row by rowError), but one keystroke
+// earlier beats a failed save.
+func (s orgState) pinBlock(i int) string {
+	if i < 0 || i >= len(roleKeys) {
+		return ""
+	}
+	agent := s.roles[i]
+	if agent == "" {
+		return ""
+	}
+	a, ok := s.agents[agent]
+	if !ok {
+		return ""
+	}
+	if isCamelAgent(agent, a) {
+		return "cannot pin " + roleKeys[i] + ": camelStream serves a fleet and only accepts auto"
+	}
+	if a.Type == "command" && !hasModelPlaceholder(a.Args) {
+		return fmt.Sprintf("cannot pin %s: agent %q is type command — add {{model}} to its args first", roleKeys[i], agent)
+	}
+	return ""
+}
+
+// isCamelAgent reports whether an agent talks to camelStream's fleet: its
+// CAMEL_BASE_URL names the stream endpoint (only auto is accepted there, so
+// no pin can exist), with a name starting "camel" as the fallback for agents
+// that reach the endpoint indirectly.
+func isCamelAgent(name string, a config.Agent) bool {
+	if strings.Contains(a.Env["CAMEL_BASE_URL"], "stream.camelai.com") {
+		return true
+	}
+	return strings.HasPrefix(strings.ToLower(name), "camel")
+}
+
+// hasModelPlaceholder mirrors config's rule: a command agent only ever sees a
+// model through {{model}} in its args.
+func hasModelPlaceholder(args []string) bool {
+	for _, arg := range args {
+		if strings.Contains(arg, "{{model}}") {
+			return true
+		}
+	}
+	return false
+}
+
+// availableModels is the catalogue for one agent: the real opencode list for
+// an opencode agent, otherwise only what is already configured — a command
+// agent's id comes from its CLI and an openai agent's from its endpoint, and
+// neither can be enumerated, so those keep free text in the ⏎ editor.
+func (s orgState) availableModels(name string) []string {
+	a, hasAgent := s.agents[name]
+	seen := map[string]bool{}
+	known := make([]string, 0, len(s.available)+len(s.agents))
+	add := func(model string) {
+		model = strings.TrimSpace(model)
+		if model != "" && !seen[model] {
+			seen[model] = true
+			known = append(known, model)
+		}
+	}
+	if hasAgent && a.Type == "opencode" {
+		for _, id := range s.available {
+			add(id)
+		}
+	}
+	for _, n := range s.agentNames() {
+		if b := s.agents[n]; b.Type == "opencode" {
+			add(b.Model)
+		}
+	}
+	if hasAgent && a.Type != "opencode" && a.Model != "" {
+		add(a.Model)
+	}
+	sort.Strings(known)
+	return known
+}
+
+// modelChoices is a role's picker list: inherit first, then the catalogue for
+// the agent that fills the seat, with a pin already on disk kept in the list
+// so cycling past it can never silently drop it.
+func (s orgState) modelChoices(i int) []string {
+	if i < 0 || i >= len(roleKeys) {
+		return []string{""}
+	}
+	known := s.availableModels(s.roles[i])
+	choices := append([]string{""}, known...)
+	if pin := s.roleModels[roleKeys[i]]; pin != "" && orgIndexOf(known, pin) < 0 {
+		choices = append([]string{"", pin}, known...)
+	}
+	return choices
+}
+
+// modelBlock refuses a model choice that would be accepted and then quietly
+// do nothing, naming the exact fix. camelStream serves a fleet; a command
+// agent only ever sees a model through {{model}} in its args.
+func (s orgState) modelBlock(name string) string {
+	a, ok := s.agents[name]
+	if !ok {
+		return "no such agent " + name
+	}
+	if a.Type == "opencode" || a.Type == "openai" {
+		return ""
+	}
+	if isCamelAgent(name, a) {
+		return "cannot set a model on " + name + ": camelStream serves a fleet and only accepts auto (its model is CAMEL_MODEL in env)"
+	}
+	if !hasModelPlaceholder(a.Args) {
+		return fmt.Sprintf("cannot set a model on %s: type command — add {{model}} to its args first", name)
+	}
+	return ""
+}
+
 // ---- inline editor ----
 
 type orgEditKind int
 
 const (
-	editMeta    orgEditKind = iota // title, dept, tier, notes, model
+	editMeta    orgEditKind = iota // title, dept, tier, notes, model[, role model]
 	editNew                        // name, type, model, command, base_url
 	editPersona                    // one seat's persona
 )
@@ -739,6 +1122,7 @@ type orgEdit struct {
 	kind   orgEditKind
 	agent  string // editMeta target
 	seat   int    // editPersona target
+	role   int    // roleKeys index for a role row's model field; -1 otherwise
 	fields []orgEditField
 	vals   []string // committed values; vals[sel] is what the input shows
 	sel    int
@@ -746,7 +1130,7 @@ type orgEdit struct {
 }
 
 func newOrgEdit(kind orgEditKind, agent string, seat int, fields []orgEditField, vals []string) *orgEdit {
-	e := &orgEdit{kind: kind, agent: agent, seat: seat, fields: fields, vals: vals, input: textinput.New()}
+	e := &orgEdit{kind: kind, agent: agent, seat: seat, role: -1, fields: fields, vals: vals, input: textinput.New()}
 	e.input.Prompt = accentStyle.Render("› ")
 	e.input.Width = 46
 	e.show(0)
@@ -766,20 +1150,33 @@ func (e *orgEdit) show(sel int) {
 
 // openOrgEdit opens the metadata editor for the selected row's agent: the
 // sidecar fields (title, dept, tier, notes) plus model — the one engine field
-// that can be written back without touching placeholders.
+// that can be written back without touching placeholders. A role row earns a
+// sixth field, role model, for a pin typed by hand: the m picker cycles the
+// ids already configured, while Claude/ChatGPT ids come from their CLIs and
+// can only arrive here as free text.
 func (s *orgState) openOrgEdit(row orgRow) tea.Cmd {
 	name := s.rowAgent(row)
 	if name == "" {
 		return sayStatus("no agent here — ←/→ picks one", true)
 	}
 	a, md := s.agents[name], s.meta[name]
-	s.edit = newOrgEdit(editMeta, name, -1, []orgEditField{
+	e := newOrgEdit(editMeta, name, -1, []orgEditField{
 		{label: "title", placeholder: "Staff engineer", limit: 80},
 		{label: "dept", placeholder: strings.Join(orgDepts, " · "), limit: 40},
 		{label: "tier", placeholder: "senior · lead · contractor", limit: 40},
 		{label: "notes", placeholder: "what the team should know", limit: 240},
 		{label: "model", placeholder: "empty = engine default", limit: 160},
 	}, []string{md.Title, md.Dept, md.Tier, md.Notes, a.Model})
+	if row.kind == rowRole && row.i < len(roleKeys) {
+		e.role = row.i
+		e.fields = append(e.fields, orgEditField{
+			label:       "role model",
+			placeholder: "empty = inherit · an id from the agent's CLI",
+			limit:       160,
+		})
+		e.vals = append(e.vals, s.roleModels[roleKeys[row.i]])
+	}
+	s.edit = e
 	return nil
 }
 
@@ -854,7 +1251,8 @@ func (e *orgEdit) commit(s *orgState) tea.Cmd {
 
 // applyMeta writes the committed field into the sidecar (or, for model, into
 // the working agent — model is safe to write back; args and command are not,
-// because Parse expands them).
+// because Parse expands them). The sixth field only exists on a role row —
+// the seat's model pin — and commits through setRoleModel instead.
 func (e *orgEdit) applyMeta(s *orgState) tea.Cmd {
 	name := e.agent
 	md := s.meta[name]
@@ -876,6 +1274,18 @@ func (e *orgEdit) applyMeta(s *orgState) tea.Cmd {
 			}
 			s.modelEdited[name] = true
 		}
+	case 5:
+		// Role rows end with the seat's model pin — role_models, a different
+		// object from the agent's own model — so it commits down its own
+		// path, constraints and all. A refusal keeps the field open with the
+		// typed value, so the fix is one keystroke away.
+		cmd, ok := s.setRoleModel(e.role, e.vals[5])
+		if !ok {
+			e.show(e.sel)
+			return cmd
+		}
+		s.edit = nil
+		return cmd
 	}
 	s.meta[name] = md
 	s.dirty = true
@@ -1097,6 +1507,9 @@ func (m Model) orgBody(w, h int) string {
 	if s.confirm != nil {
 		tail = append(tail, orgConfirmView(w, s.confirm))
 	}
+	if s.pick != nil {
+		tail = append(tail, orgPickView(w, s.pick))
+	}
 	tail = append(tail, mutedStyle.Render(truncate(orgKeysHint, w-4)))
 
 	// Measure the tail in rendered lines (the editor and confirmation cards
@@ -1125,11 +1538,12 @@ func (m Model) orgBody(w, h int) string {
 	return strings.Join(lines, "\n")
 }
 
-// orgRoleLine renders one of the five roles: who fills it, what engine they
-// run, whether they only read, and any save error pinned to this row. The
-// width budgets keep mark+label+name+engine+mark+error under the frame's
-// wrap width even in the worst case, so a long model name cannot shatter
-// the layout.
+// orgRoleLine renders one of the five roles: who fills it, which model the
+// seat runs and where it comes from (pinned, or inherited from the agent),
+// what engine they run, whether they only read, and any save error pinned to
+// this row. The width budgets keep mark+label+name+model+mark+error under the
+// frame's wrap width even in the worst case, so a long model name cannot
+// shatter the layout.
 func (s orgState) orgRoleLine(w int, i int, sel bool) string {
 	mark, lab := orgRowMark(sel)
 	err := s.rowError(orgRow{kind: rowRole, i: i})
@@ -1146,9 +1560,12 @@ func (s orgState) orgRoleLine(w int, i int, sel bool) string {
 			hint = "press a to add one"
 		}
 		b.WriteString(warnStyle.Render("— unassigned") + mutedStyle.Render(" "+hint))
+		if pin := s.roleModels[roleKeys[i]]; pin != "" {
+			b.WriteString(infoStyle.Render("  " + truncate(pin, 20) + " (pinned)"))
+		}
 	} else {
 		b.WriteString(titleStyle.Render(truncate(agent, 20)))
-		b.WriteString(mutedStyle.Render("  " + truncate(s.engineLine(agent), max(8, w-54-errB))))
+		b.WriteString("  " + s.roleEngineLine(i, max(8, w-54-errB)))
 		if readOnlyRoles[roleKeys[i]] || s.metaRO(agent) {
 			b.WriteString(mutedStyle.Render(" (ro)"))
 		}
@@ -1262,24 +1679,75 @@ func (s orgState) engineLine(name string) string {
 	if !ok {
 		return "unknown agent"
 	}
+	kind := s.engineKind(name)
 	switch a.Type {
 	case "openai":
 		model := a.Model
 		if model == "" {
 			model = "no model"
 		}
-		return "OpenAI-compat · " + model
+		return kind + " · " + model
+	case "command":
+		return kind
+	default:
+		if a.Model == "" {
+			return kind + " · default"
+		}
+		return kind + " · " + a.Model
+	}
+}
+
+// engineKind is the engine behind an agent with no model attached — what a
+// role row prefixes the seat's effective model with.
+func (s orgState) engineKind(name string) string {
+	a, ok := s.agents[name]
+	if !ok {
+		return "unknown agent"
+	}
+	switch a.Type {
+	case "openai":
+		return "OpenAI-compat"
 	case "command":
 		if a.Command == "" {
 			return "command not set"
 		}
 		return filepath.Base(a.Command)
 	default:
-		if a.Model == "" {
-			return "OpenCode Go · default"
-		}
-		return "OpenCode Go · " + a.Model
+		return "OpenCode Go"
 	}
+}
+
+// roleEngineLine is a role row's engine column, and where the model in it
+// comes from: "(pinned)" when role_models overrides the seat, "(inherited)"
+// when it is the filling agent's own model — the effective model always
+// spelled out, the two sources told apart at a glance. Computed from the
+// working copies rather than the loaded *config.Config, so it stays true
+// while edits are still unsaved. The suffix is never truncated: only the
+// model id gives way to the width budget.
+func (s orgState) roleEngineLine(i int, budget int) string {
+	if i < 0 || i >= len(roleKeys) {
+		return ""
+	}
+	agent := s.roles[i]
+	if agent == "" {
+		return ""
+	}
+	role := roleKeys[i]
+	pin := s.roleModels[role]
+	model, marker := s.agents[agent].Model, " (inherited)"
+	if pin != "" {
+		model, marker = pin, " (pinned)"
+	}
+	if model == "" {
+		model = "default"
+	}
+	prefix := truncate(s.engineKind(agent), max(4, budget-lipgloss.Width(marker)-3)) + " · "
+	avail := max(4, budget-lipgloss.Width(prefix)-lipgloss.Width(marker))
+	body := truncate(model, avail)
+	if pin != "" {
+		return mutedStyle.Render(prefix) + infoStyle.Render(body+marker)
+	}
+	return mutedStyle.Render(prefix + body + marker)
 }
 
 // metaRO / fillsReadOnlyRole mark agents that only look: the sidecar flag, or
@@ -1296,13 +1764,14 @@ func (s orgState) fillsReadOnlyRole(name string) bool {
 }
 
 // rowError pins a config.Save field failure to the row it belongs to: exact
-// match for roles and participant fields, name prefix for agents.*.
+// match for roles and role_models, participant fields by seat number, name
+// prefix for agents.*.
 func (s orgState) rowError(row orgRow) string {
 	name := s.rowAgent(row)
 	for _, fe := range s.fieldErrs {
 		f := fe.Field
 		switch {
-		case row.kind == rowRole && f == "roles."+roleKeys[row.i]:
+		case row.kind == rowRole && (f == "roles."+roleKeys[row.i] || f == "role_models."+roleKeys[row.i]):
 			return fe.Msg
 		case row.kind == rowSeat && orgParticipantField(f, row.i):
 			return fe.Msg
@@ -1364,7 +1833,37 @@ func orgConfirmView(w int, c *orgConfirm) string {
 	return style.Width(min(max(20, w-6), 70)).Render(rows)
 }
 
-const orgKeysHint = "↑↓ row · ←→ value · ⏎ meta · p persona · + seat · x rm · [ ] order · a agent · d del · s save · esc back"
+// orgPickView draws the model picker under the list: the seat, the choice
+// under the cursor (inherit spelled out when it is the clear option), and
+// where it sits in the list.
+func orgPickView(w int, p *orgModelPick) string {
+	if p == nil || len(p.choices) == 0 || (p.role >= len(roleKeys) && p.role >= 0) {
+		return ""
+	}
+	choice := ""
+	if p.sel >= 0 && p.sel < len(p.choices) {
+		choice = p.choices[p.sel]
+	}
+	var title, empty, verb string
+	if p.role >= 0 {
+		title, verb = "Model · "+roleKeys[p.role], "pin"
+		empty = "inherit — the agent's own model"
+	} else {
+		title, verb = "Model · "+p.agent, "set"
+		empty = "engine default (no model set)"
+	}
+	val := titleStyle.Render(truncate(choice, 44))
+	if choice == "" {
+		val = mutedStyle.Render(empty)
+	}
+	rows := titleStyle.Render(title) +
+		"\n" + accentStyle.Render("› ") + val +
+		mutedStyle.Render(fmt.Sprintf("  %d/%d", p.sel+1, max(1, len(p.choices)))) +
+		"\n" + mutedStyle.Render("←/→ choose · ⏎ "+verb+" · esc cancel")
+	return cardStyle.Width(min(max(20, w-6), 64)).Render(rows)
+}
+
+const orgKeysHint = "↑↓ row · ←→ value · ⏎ meta · p persona · m model · + seat · x rm · [ ] order · a agent · d del · s save · esc back"
 
 // orgIndexOf is index-of in a []string, -1 when absent.
 func orgIndexOf(list []string, v string) int {

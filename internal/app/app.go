@@ -30,6 +30,35 @@ func ValidName(name string) error {
 	return nil
 }
 
+// Delete removes a project directory.
+//
+// Two refusals make this safe enough to expose to an API: a build that is
+// still running must be stopped first (deleting out from under a live
+// `factory run` would leave it writing into a hole), and the path must be a
+// factory project sitting inside a parent directory — so no crafted name can
+// turn a delete into a walk outside the workspace.
+func Delete(dir string) error {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	parent := filepath.Dir(abs)
+	if abs == string(filepath.Separator) || parent == abs || parent == string(filepath.Separator) {
+		return fmt.Errorf("refusing to delete %s: not inside a workspace", abs)
+	}
+	store := &state.Store{Root: abs}
+	if !store.Exists() {
+		return fmt.Errorf("%s is not a factory project", abs)
+	}
+	if pid := store.Pid(); proc.Alive(pid) {
+		return fmt.Errorf("a build is running (pid %d) — stop it first", pid)
+	}
+	if err := os.RemoveAll(abs); err != nil {
+		return fmt.Errorf("could not delete %s: %w", abs, err)
+	}
+	return nil
+}
+
 // Project is an opened factory project.
 type Project struct {
 	Cfg     *config.Config
@@ -158,6 +187,33 @@ func (pr *Project) Stop() error {
 		return errors.New("no build is running")
 	}
 	return proc.Terminate(pid)
+}
+
+// StopAndWait terminates a running build and waits for it to actually exit.
+//
+// Terminate only sends the signal, so a caller that stops a build and then
+// deletes the project would race the process it just signalled — Delete's own
+// running check would (rightly) still see it alive and refuse. Waiting here
+// keeps that guard strict and gives every caller the same behaviour.
+func (pr *Project) StopAndWait(timeout time.Duration) error {
+	if _, ok := pr.Running(); !ok {
+		pr.Store.ClearPid()
+		return nil
+	}
+	if err := pr.Stop(); err != nil {
+		return fmt.Errorf("could not stop the build: %w", err)
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, ok := pr.Running(); !ok {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if _, ok := pr.Running(); ok {
+		return errors.New("the build did not stop")
+	}
+	return nil
 }
 
 // Summary is a compact view of a project for listings.
