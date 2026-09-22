@@ -67,6 +67,10 @@ type Model struct {
 	showHelp bool
 	spinner  spinner.Model
 
+	// delConfirm holds the id of a project awaiting a second press of d.
+	// Deleting is irreversible, so it takes two presses; esc cancels.
+	delConfirm string
+
 	// screen state
 	home  homeState
 	fresh newProjectState
@@ -180,6 +184,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = status{text: msg.text, bad: msg.bad, at: time.Now()}
 		return m, nil
 
+	case projectDeletedMsg:
+		if msg.err != nil {
+			m.status = status{text: msg.err.Error(), bad: true, at: time.Now()}
+			return m, nil
+		}
+		m.delConfirm = ""
+		m.status = status{text: "deleted " + msg.name, at: time.Now()}
+		return m, loadProjects(m.Workspace)
+
 	case setRouteMsg:
 		// Navigating away from an org chart with unsaved edits would silently
 		// discard them, so refuse and say so instead.
@@ -245,6 +258,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// project, then the list — jumping straight out of a file you were
 		// reading would be disorienting.
 		if msg.String() == "esc" && !m.typing() {
+			// A pending delete confirmation is the most local thing on
+			// screen: esc cancels it before backing out anywhere.
+			if m.delConfirm != "" {
+				m.delConfirm = ""
+				return m, sayStatus("delete cancelled", false)
+			}
 			if m.route == routeProject && m.proj.tab != tabOverview {
 				m.proj.tab = tabOverview
 				return m, nil
@@ -459,7 +478,7 @@ func (m Model) keysForRoute() string {
 	case routeDoctor:
 		return "⏎ check all · esc back · " + base
 	default:
-		return "↑↓ select · ⏎ open · / filter · " + base
+		return "↑↓ select · ⏎ open · / filter · d delete · " + base
 	}
 }
 

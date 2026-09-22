@@ -45,6 +45,8 @@ async function api(path, opts = {}) {
     const err = new Error(data.error || res.statusText);
     // PUT /api/config reports validation failures as [{field, message}].
     if (Array.isArray(data.fields)) err.fields = data.fields;
+    // The status lets callers tell a 409 race from a hard failure.
+    err.status = res.status;
     throw err;
   }
   return data;
@@ -109,6 +111,7 @@ $("#logout-btn").addEventListener("click", async () => {
 });
 
 $("#menu-btn").addEventListener("click", () => $("#sidebar").classList.toggle("open"));
+$("#project-list").addEventListener("click", onProjectListClick);
 
 // ---------- markdown (safe subset: everything is escaped first) ----------
 
@@ -226,13 +229,171 @@ function renderSidebar() {
     .map((p) => {
       const indicator = p.waiting ? `<span class="dot ask" title="Waiting for your answer"></span>` : p.running || p.interview ? `<span class="dot pulse" title="Working"></span>` : "";
       const meta = p.total ? `${p.done}/${p.total} tasks${p.blocked ? ` · ${p.blocked} blocked` : ""}` : p.phase === "spec" ? (p.waiting ? "waiting for you" : "spec interview") : "";
-      return `<a class="project-item ${p.id === cur ? "active" : ""}" href="#/p/${encodeURIComponent(p.id)}">
-        <div class="row">${indicator}<span class="name">${esc(p.name)}</span>${phasePill(p)}</div>
-        <div class="meta">${esc(meta)}${meta ? " · " : ""}${esc(ago(p.updated))}</div>
-        ${p.total ? `<div class="bar" style="margin-top:6px"><span style="width:${pct(p.done, p.total)}%"></span></div>` : ""}
-      </a>`;
+      // The row is a wrapper (not the <a> itself) so the delete button can be a
+      // real sibling button — a button inside an anchor would be invalid HTML.
+      return `<div class="project-row">
+        <a class="project-item ${p.id === cur ? "active" : ""}" href="#/p/${encodeURIComponent(p.id)}">
+          <div class="row">${indicator}<span class="name">${esc(p.name)}</span>${phasePill(p)}</div>
+          <div class="meta">${esc(meta)}${meta ? " · " : ""}${esc(ago(p.updated))}</div>
+          ${p.total ? `<div class="bar" style="margin-top:6px"><span style="width:${pct(p.done, p.total)}%"></span></div>` : ""}
+        </a>
+        <button type="button" class="project-del" data-act="del-project" data-id="${esc(p.id)}" title="Delete ${esc(p.name)}" aria-label="Delete project ${esc(p.name)}">🗑</button>
+      </div>`;
     })
     .join("") + `<a class="project-item only-mobile" href="#/agents"><span class="name">Agents & health</span></a>`;
+}
+
+// ---------- destructive confirmation (project delete) ----------
+// factory's rule: nothing irreversible happens without a human saying yes.
+// y/n keys like the terminal, Esc and backdrop cancel, focus starts on Cancel
+// so a stray Enter can never be the destructive one.
+
+let DIALOG = null;
+
+const findProject = (id) => S.projects.find((p) => p.id === id);
+
+function onProjectListClick(ev) {
+  const btn = ev.target && ev.target.closest && ev.target.closest("[data-act='del-project']");
+  if (btn) confirmDeleteProject(btn.dataset.id);
+}
+
+function closeConfirmDialog() {
+  if (DIALOG && DIALOG.keyHandler) document.removeEventListener("keydown", DIALOG.keyHandler, true);
+  DIALOG = null;
+  const d = $("#app-dialog");
+  if (d) d.remove();
+}
+
+function setDialogBusy(busy) {
+  const wrap = $("#app-dialog");
+  if (!wrap || !DIALOG) return;
+  wrap.querySelectorAll("button").forEach((b) => (b.disabled = busy));
+  const ok = wrap.querySelector("[data-dlg='ok']");
+  if (ok) ok.textContent = busy ? DIALOG.busyLabel : DIALOG.okLabel;
+}
+
+function runDialogConfirm() {
+  const d = DIALOG;
+  if (!d || d.busy) return;
+  d.busy = true;
+  setDialogBusy(true);
+  Promise.resolve()
+    .then(() => d.onConfirm())
+    .catch((e) => {
+      closeConfirmDialog();
+      toast((e && e.message) || "Something went wrong", true);
+    })
+    .then(() => {
+      if (DIALOG === d) { d.busy = false; setDialogBusy(false); } // flow always closes on purpose; safety net
+    });
+}
+
+function openConfirmDialog(opts) {
+  closeConfirmDialog();
+  const wrap = document.createElement("div");
+  wrap.className = "overlay app-dialog";
+  wrap.id = "app-dialog";
+  wrap.innerHTML = `<div class="card dialog-card" role="alertdialog" aria-modal="true" aria-labelledby="app-dialog-title" aria-describedby="app-dialog-body">
+    <h2 id="app-dialog-title">${esc(opts.title)}</h2>
+    <div class="dlg-body" id="app-dialog-body">${opts.body}</div>
+    <div class="dlg-keys muted">Press y to confirm · n or Esc to cancel</div>
+    <div class="form-actions dlg-actions">
+      <button type="button" class="btn" data-dlg="cancel">Cancel</button>
+      <button type="button" class="btn danger" data-dlg="ok">${esc(opts.okLabel)}</button>
+    </div>
+  </div>`;
+  document.body.appendChild(wrap);
+  DIALOG = { onConfirm: opts.onConfirm, okLabel: opts.okLabel, busyLabel: opts.busyLabel || "Working…", busy: false };
+  wrap.addEventListener("click", (ev) => { if (ev.target === wrap) closeConfirmDialog(); }); // backdrop cancels
+  wrap.querySelector("[data-dlg='cancel']").addEventListener("click", closeConfirmDialog);
+  wrap.querySelector("[data-dlg='ok']").addEventListener("click", runDialogConfirm);
+  const keys = Array.from(wrap.querySelectorAll("button"));
+  const keyHandler = (ev) => {
+    if (!DIALOG) return;
+    ev.stopPropagation(); // the modal owns the keyboard until it closes
+    if (ev.key === "Escape" || ev.key === "n" || ev.key === "N") { ev.preventDefault(); closeConfirmDialog(); return; }
+    if (ev.key === "y" || ev.key === "Y") { ev.preventDefault(); runDialogConfirm(); return; }
+    if (ev.key === "Tab") {
+      ev.preventDefault(); // keep focus inside the two buttons
+      const i = keys.indexOf(document.activeElement);
+      keys[ev.shiftKey ? (i <= 0 ? keys.length - 1 : i - 1) : (i + 1) % keys.length].focus();
+    }
+  };
+  DIALOG.keyHandler = keyHandler;
+  document.addEventListener("keydown", keyHandler, true);
+  keys[0].focus(); // Cancel first: Enter is safe by default
+}
+
+function confirmDeleteProject(id) {
+  const p = findProject(id);
+  if (!p) return;
+  const running = !!p.running;
+  const body =
+    `<p><strong>${esc(p.name)}</strong>${p.dir ? ` <code>${esc(p.dir)}</code>` : ""}</p>` +
+    (running ? `<p class="dlg-warn">⚠ Its build is running — deleting stops the build too.</p>` : "") +
+    `<p>This permanently removes the project's files and git history. It cannot be undone.</p>`;
+  openConfirmDialog({
+    title: `Delete “${p.name}”?`,
+    body,
+    okLabel: running ? "Stop build & delete" : "Delete project",
+    busyLabel: running ? "Stopping…" : "Deleting…",
+    onConfirm: () => performProjectDelete(id, running),
+  });
+}
+
+// The race is real: a build can start between render and click, so the server
+// answers 409. Turn that into a second, explicit stop-and-delete step — never
+// a raw error.
+function openBuildRunningDialog(id, serverMsg) {
+  const p = findProject(id);
+  const name = (p && p.name) || id;
+  openConfirmDialog({
+    title: `“${name}” is still building`,
+    body: `<p>Its build started while you were deciding, so factory left the project untouched.</p>
+      <p class="muted">${esc(serverMsg)}</p>
+      <p>Stopping the build and deleting it removes the project's files and git history anyway.</p>`,
+    okLabel: "Stop build & delete",
+    busyLabel: "Stopping…",
+    onConfirm: () => performProjectDelete(id, true),
+  });
+}
+
+async function performProjectDelete(id, force) {
+  try {
+    const res = await api(`projects/${encodeURIComponent(id)}${force ? "?force=true" : ""}`, { method: "DELETE" });
+    closeConfirmDialog();
+    applyProjectDeleted(id, force, res);
+  } catch (e) {
+    if (e && e.status === 409) {
+      closeConfirmDialog();
+      openBuildRunningDialog(id, e.message);
+      return;
+    }
+    closeConfirmDialog();
+    toast((e && e.message) || "Couldn't delete the project", true); // state untouched
+  }
+}
+
+// Success: the row leaves state, anything referring to the project is cleared,
+// and an open main pane navigates back to the list — the UI must never keep
+// pointing at a directory that no longer exists.
+function applyProjectDeleted(id, stoppedBuild, res) {
+  const p = findProject(id);
+  const name = (p && p.name) || (res && res.id) || id;
+  const wasOpen = S.route.view === "project" && S.route.id === id;
+  S.projects = S.projects.filter((x) => x.id !== id);
+  if (S.detail && (!S.detail.summary || S.detail.summary.id === id)) S.detail = null;
+  if (S.chat.id === id) S.chat = { id: null, after: 0, waiting: false, active: false, exists: false };
+  if (S.log.id === id) S.log = { id: null, offset: -1, follow: true };
+  if (wasOpen) {
+    S.openTask = null;
+    S.artifacts = [];
+    S.artifact = null;
+    location.hash = "#/"; // hashchange → route() → sidebar + home, never the dead path
+  } else {
+    renderSidebar();
+  }
+  toast(stoppedBuild ? `Build stopped · “${name}” deleted` : `“${name}” deleted — files and git history removed`);
 }
 
 // ---------- home ----------
@@ -319,6 +480,11 @@ const AG = {
   baseSnap: "", undo: [], health: {},
   drawer: undefined, draft: null, returnFocus: null,
   drag: null, suppressCardUntil: 0,
+  // Per-role model pins (config key role_models) plus their display data.
+  effective: {},                                            // effective_models from GET /api/config (read-only)
+  modelSrc: { state: "idle", sources: [], warnings: [] },   // GET /api/models, fetched once and cached here
+  modelText: {},                                            // data-field path → true while its "Custom…" free-text box is open
+  modelTyping: null,                                        // role mid-typing burst, so a burst is one undo entry
 };
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -342,10 +508,17 @@ function isSecretEnv(key, value) {
 
 function normaliseCfg(raw) {
   const c = clone(raw);
+  delete c.effective_models; // derived by GET /api/config; never part of PUT /api/config
   if (c.agents && !Array.isArray(c.agents)) c.agents = Object.entries(c.agents).map(([name, a]) => ({ name, ...(a || {}) }));
   c.agents = (c.agents || []).map((a) => ({ ...(a || {}), name: a && a.name ? String(a.name) : "", env: (a && a.env) || {}, args: (a && a.args) || [] }));
   c.roles = { interviewer: "", planner: "", builder: "", reviewer: "", moderator: "", ...(c.roles || {}) };
   for (const k of ROLE_KEYS) c.roles[k] = c.roles[k] || "";
+  // role_models is optional: an old config has no key (or null) and simply
+  // means "every seat runs its agent's model". Only real pins survive here —
+  // an empty or unknown override would be a validation error on save.
+  const rm = c.role_models && typeof c.role_models === "object" ? c.role_models : {};
+  c.role_models = {};
+  for (const k of ROLE_KEYS) if (typeof rm[k] === "string" && rm[k].trim()) c.role_models[k] = rm[k];
   const rt = { ...(c.roundtable || {}) };
   rt.rounds = Number(rt.rounds) > 0 ? Math.floor(Number(rt.rounds)) : 2;
   rt.on_spec = rt.on_spec !== false;
@@ -380,6 +553,8 @@ function secretFrom(cfg) {
 function adoptCfg(raw, keepUI = false) {
   const drawer = AG.drawer, draft = AG.draft, undo = AG.undo, ret = AG.returnFocus;
   const c = normaliseCfg(raw);
+  const eff = raw && raw.effective_models && typeof raw.effective_models === "object" ? raw.effective_models : {};
+  AG.effective = { ...eff };
   AG.path = c.path || "";
   AG.editable = c.editable !== false;
   AG.cfg = c;
@@ -395,6 +570,7 @@ function adoptCfg(raw, keepUI = false) {
     if (typeof AG.drawer === "string" && !findAgent(AG.drawer)) AG.drawer = undefined;
   } else {
     AG.undo = []; AG.drawer = undefined; AG.draft = null; AG.returnFocus = null;
+    AG.modelText = {}; AG.modelTyping = null;
   }
 }
 
@@ -402,6 +578,7 @@ const snap = () => JSON.stringify({ c: AG.cfg, m: AG.meta, s: AG.secret });
 const isDirty = () => !!AG.cfg && snap() !== AG.baseSnap;
 
 function pushUndo(label) {
+  AG.modelTyping = null; // any other mutation ends the current typing burst
   AG.undo.push({ label, cfg: clone(AG.cfg), meta: clone(AG.meta), secret: clone(AG.secret) });
   if (AG.undo.length > 60) AG.undo.shift();
 }
@@ -410,6 +587,7 @@ function undoLast() {
   const e = AG.undo.pop();
   if (!e) { toast("Nothing to undo"); return; }
   AG.cfg = e.cfg; AG.meta = e.meta; AG.secret = e.secret;
+  AG.modelTyping = null;
   if (typeof AG.drawer === "string" && !findAgent(AG.drawer)) { AG.drawer = undefined; AG.draft = null; }
   redrawAgents();
   toast("Undone: " + e.label);
@@ -513,13 +691,27 @@ function chk(path, value, label, dis) {
 function withRestoredFocus(el, fn) {
   const a = document.activeElement;
   const inside = a && a !== document.body && el.contains(a);
-  let sel = null;
+  let sel = null, caret = null;
   if (inside && a.id) sel = "#" + a.id;
   else if (inside && a.dataset && a.dataset.field) sel = `[data-field="${String(a.dataset.field).replace(/["\\]/g, "\\$&")}"]`;
+  // Text fields keep their caret too: a re-render mid-edit must not jump the
+  // insertion point to the end of the value.
+  if (inside && /^(INPUT|TEXTAREA)$/.test(a.tagName)) {
+    try { caret = [a.selectionStart, a.selectionEnd]; } catch (_) { caret = null; }
+  }
   fn();
   if (sel) {
-    const t = el.querySelector(sel);
-    if (t) { try { t.focus(); } catch (_) {} }
+    const cands = Array.from(el.querySelectorAll(sel));
+    let t = cands[0] || null;
+    // Prefer the same kind of control: a revealed custom-id box must not hand
+    // focus back to the select that sits in front of it.
+    if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) t = cands.find((n) => n.tagName === a.tagName) || t;
+    if (t) {
+      try {
+        t.focus();
+        if (caret && caret[0] != null && /^(INPUT|TEXTAREA)$/.test(t.tagName)) t.setSelectionRange(caret[0], caret[1]);
+      } catch (_) {}
+    }
   }
 }
 
@@ -545,6 +737,10 @@ async function renderAgents() {
   }
   bindAgentsOnce();
   if (!AG.loaded || !isDirty()) adoptCfg(cfg);
+  // The seat pickers need GET /api/models. Fire and forget: the editor renders
+  // straight away (controls degrade to free text) and the canvas redraws when
+  // the list lands. Cached in AG.modelSrc, so it is fetched once per session.
+  loadModelSources();
   renderAgentsUI();
 }
 
@@ -562,6 +758,7 @@ function renderAgentsUI() {
         ${AG.editable ? `<button type="button" class="btn small" data-act="new-agent">+ Add agent</button>` : `<span class="pill">read-only</span>`}
       </div>
     </div>
+    <div id="oc-model-warns" class="oc-model-warns"${(AG.modelSrc.warnings || []).length ? "" : " hidden"}>${modelWarningsInner()}</div>
     <div class="oc-grid" id="oc-canvas"></div>
     <details class="card oc-adv" id="oc-adv"${advOpen ? " open" : ""}><summary>Advanced — roundtable settings, limits and commands</summary><div id="oc-adv-body"></div></details>
     <div class="card"><div class="toolbar"><h2 style="margin:0">Health</h2><button type="button" class="btn primary" data-act="doctor">Check all agents</button><span class="muted" style="margin-left:auto">Sends each agent a one-word prompt.</span></div><div id="oc-health"></div></div>
@@ -573,6 +770,7 @@ function renderAgentsUI() {
 
 function redrawAgents() {
   if (!AG.cfg) return;
+  AG.modelTyping = null; // a full rebuild ends any typing burst on a model box
   renderCanvas();
   renderAdvanced();
   renderHealth();
@@ -588,6 +786,335 @@ function renderCanvas() {
   withRestoredFocus(el, () => {
     el.innerHTML = DEPTS.map(zoneHTML).join("") + panelZoneHTML() + poolZoneHTML();
   });
+}
+
+// ---------- per-role model pins (config key role_models) ----------
+// A role is a seat; role_models pins the model that seat runs regardless of
+// which agent fills it. Absent key = the seat inherits its agent's model.
+
+const roleOverride = (role) => (AG.cfg && AG.cfg.role_models ? AG.cfg.role_models[role] || "" : "");
+
+// The model a seat actually runs: its pin if it has one, otherwise its agent's
+// model — which is exactly what GET /api/config reports as
+// effective_models[role]. The agent is read live so a seat whose occupant (or
+// whose agent's model) just changed never shows a stale value; the server's
+// effective_models covers a seat that cannot be resolved locally at all.
+function effectiveModelFor(role) {
+  const ov = roleOverride(role);
+  if (ov) return ov;
+  const a = findAgent(AG.cfg.roles[role]);
+  if (a) return a.model || "";
+  return (AG.effective && AG.effective[role]) || "";
+}
+
+// camelStream serves a fleet: the only value it accepts is `auto`, so a pin on
+// one of its seats would be stored and then silently ignored by the endpoint.
+function isCamelAgent(name) {
+  const a = findAgent(name);
+  if (!a) return false;
+  if (String(a.name || "").startsWith("camel")) return true;
+  return String((a.env || {}).CAMEL_BASE_URL || "").includes("stream.camelai.com");
+}
+
+// A command agent only receives a pinned model through {{model}} in its args.
+// Without the placeholder factory rejects the save with field
+// role_models.<role> — detect it here so the seat can say so before Save.
+function seatNeedsPlaceholder(role) {
+  const a = findAgent(AG.cfg.roles[role]);
+  if (!a || a.type !== "command") return false;
+  return !(Array.isArray(a.args) ? a.args : []).some((x) => String(x).includes("{{model}}"));
+}
+
+// ---- sources: GET /api/models, fetched once and cached in AG.modelSrc ----
+
+const MODEL_CUSTOM = "__custom__"; // the one select option that reveals the free-text id box
+
+function allModelSources() {
+  return AG.modelSrc && Array.isArray(AG.modelSrc.sources) ? AG.modelSrc.sources : [];
+}
+const pickSources = () => allModelSources().filter((s) => s && s.kind === "pick" && Array.isArray(s.models) && s.models.length);
+const textModelSources = () => allModelSources().filter((s) => s && s.kind === "text");
+const pickModelCount = () => pickSources().reduce((n, s) => n + s.models.length, 0);
+const pickHasModel = (id) => pickSources().some((s) => s.models.includes(id));
+
+// A dropdown is only worth showing when the fetch succeeded and it carries at
+// least one model. A failed or empty response degrades every control to a
+// single text input rather than an empty select that can never be chosen from.
+function modelSourcesUsable() {
+  return AG.modelSrc.state === "ok" && pickModelCount() > 0;
+}
+
+// Custom mode for one field path (keyed by data-field): the "Custom…" option
+// was chosen, or the value in hand is an id no list offers (hand-edited
+// config) — either way the free-text box belongs open.
+const modelCustomActive = (path, value) => AG.modelText[path] === true || (!!value && !pickHasModel(value));
+
+// The one model picker, shared by the agent drawer and the role seats: a
+// <select> of every enumerated model grouped by its source label, plus a final
+// "Custom… (type an id)" option that reveals a text input — typing is never
+// the default, only the escape hatch for ids no list can enumerate (Claude,
+// codex). Returns { select, input, custom, fallback }.
+function modelPickerHTML(path, value, opts = {}) {
+  const dis = opts.dis || "";
+  const init = opts.init !== undefined ? opts.init : displayValue(path);
+  const aria = esc(opts.aria || "Model");
+  const id = fldId(path);
+  const mkInput = (withId) =>
+    `<input${withId ? ` id="${id}"` : ""} type="text" data-field="${esc(path)}" data-initial="${esc(init)}" value="${esc(value || "")}" placeholder="${esc(
+      opts.ph || "type a model id"
+    )}" autocomplete="off" spellcheck="false" aria-label="${aria}" ${dis}>`;
+  if (!modelSourcesUsable()) return { select: mkInput(true), input: "", custom: false, fallback: true };
+  // camel seats may never type an id — they cannot be pinned at all — so they
+  // get the same list but no Custom… dead end, just their own value if no list
+  // carries it.
+  const custom = opts.noCustom ? !!value && !pickHasModel(value) : modelCustomActive(path, value);
+  let html = "";
+  if (opts.emptyLabel) {
+    html += `<option value=""${value === "" && !custom ? " selected" : ""}>${esc(opts.emptyLabel)}</option>`;
+  } else if (opts.requireValue && value === "" && !custom) {
+    // openai's own model is required by schema: never offer an empty choice,
+    // only a disabled placeholder while nothing is picked yet.
+    html += `<option value="" disabled selected>— choose a model —</option>`;
+  }
+  const selVal = custom ? (opts.noCustom ? String(value) : MODEL_CUSTOM) : String(value || "");
+  for (const s of pickSources()) {
+    html += `<optgroup label="${esc(s.label)}">${s.models.map((m) => `<option value="${esc(m)}"${m === selVal ? " selected" : ""}>${esc(m)}</option>`).join("")}</optgroup>`;
+  }
+  if (custom) {
+    html += opts.noCustom
+      ? `<option value="${esc(String(value))}" selected>${esc(String(value))}</option>`
+      : `<option value="${MODEL_CUSTOM}" selected>Custom… (type an id)</option>`;
+  } else if (!opts.noCustom) {
+    html += `<option value="${MODEL_CUSTOM}">Custom… (type an id)</option>`;
+  }
+  const selInit = custom && !opts.noCustom ? MODEL_CUSTOM : init;
+  const select = `<select id="${id}" data-field="${esc(path)}" data-initial="${esc(selInit)}" aria-label="${aria}" ${dis}>${html}</select>`;
+  const input = custom && !opts.noCustom ? mkInput(false) : "";
+  return { select, input, custom, fallback: false };
+}
+
+// The escape hatch has to say which flag the typed id rides on.
+function modelTextHintsInner() {
+  const hinted = textModelSources().filter((s) => s.hint);
+  if (hinted.length) {
+    return `Type any id the CLI accepts: ${hinted
+      .map((s) => `${esc(s.label)} <code${s.note ? ` title="${esc(s.note)}"` : ""}>${esc(s.hint)}</code>`)
+      .join(" · ")}`;
+  }
+  return textModelSources().length ? "Type any model id the CLI accepts." : "";
+}
+
+// After a redraw, put the caret back in the custom-id box that was revealed.
+function focusModelCustom(path) {
+  const el = $$("#agents-body [data-field]").find((e) => e.tagName === "INPUT" && e.dataset.field === path);
+  if (el) { try { el.focus(); } catch (_) {} }
+}
+
+async function loadModelSources() {
+  if (AG.modelSrc.state !== "idle") return;
+  AG.modelSrc = { state: "loading", sources: [], warnings: [] };
+  let next;
+  try {
+    const res = await api("models");
+    next = {
+      state: "ok",
+      sources: Array.isArray(res && res.sources) ? res.sources : [],
+      warnings: Array.isArray(res && res.warnings) ? res.warnings : [],
+    };
+  } catch (e) {
+    // A failed or hostile response degrades every control to free text.
+    next = { state: "failed", sources: [], warnings: [] };
+  }
+  AG.modelSrc = next;
+  if (S.route.view === "agents" && $("#oc-canvas")) {
+    renderModelWarnings();
+    redrawAgents();
+  }
+}
+
+function retryModelSources() {
+  if (AG.modelSrc.state !== "failed") return;
+  AG.modelSrc = { state: "idle", sources: [], warnings: [] };
+  loadModelSources();
+  renderModelWarnings();
+  if (S.route.view === "agents" && $("#oc-canvas")) redrawAgents();
+}
+
+function modelWarningsInner() {
+  return ((AG.modelSrc && AG.modelSrc.warnings) || []).map((x) => `<div>⚠ ${esc(x)}</div>`).join("");
+}
+
+function renderModelWarnings() {
+  const el = $("#oc-model-warns");
+  if (!el) return;
+  el.innerHTML = modelWarningsInner();
+  el.hidden = !((AG.modelSrc && AG.modelSrc.warnings) || []).length;
+}
+
+function roleModelHeadInner(role) {
+  const pinned = !!roleOverride(role);
+  return `<span class="oc-eyebrow">Model</span><span class="oc-model-chip${pinned ? " pinned" : ""}" title="${
+    pinned ? "Pinned for this seat" : "No pin: this seat runs its agent's own model"
+  }">${pinned ? "pinned" : "from agent"}</span>`;
+}
+
+function roleModelClearBtn(role, camel) {
+  if (camel || !AG.editable) return "";
+  const agent = findAgent(AG.cfg.roles[role]);
+  const own = (agent && agent.model) || "";
+  const title = agent
+    ? `Remove the pin — this seat falls back to ${agent.name}'s own model${own ? ` (${own})` : ""}; the agent's own model is never touched`
+    : "Remove the pin — this seat falls back to its agent's model";
+  return `<button type="button" class="icon-btn oc-model-x" data-act="role-model-clear" data-role="${esc(role)}" title="${esc(title)}" aria-label="${esc(title)}"${roleOverride(role) ? "" : " hidden"}>×</button>`;
+}
+
+function roleModelControlInner(role, camel) {
+  const path = `role_models.${role}`;
+  const ov = roleOverride(role);
+  const eff = effectiveModelFor(role);
+  // camel seats refuse editing outright — even on an editable config — because
+  // a pin there would be stored and then ignored by the endpoint.
+  const dis = AG.editable && !camel ? "" : "disabled";
+  // Same dropdown the agent drawer uses — grouped by source label — plus the
+  // seat's own empty choice ("inherited from agent") in front of it.
+  const pick = modelPickerHTML(path, ov, {
+    dis,
+    aria: `Model for the ${role} seat`,
+    init: displayValue(path),
+    emptyLabel: eff ? `from agent — ${eff}` : "from agent (inherited)",
+    noCustom: camel,
+    ph: eff ? `from agent: ${eff}` : "type a model id",
+  });
+  return `${pick.select}${roleModelClearBtn(role, camel)}${pick.input}<div class="ferr" hidden></div>`;
+}
+
+function roleModelNotesInner(role, camel) {
+  const out = [];
+  const src = AG.modelSrc;
+  const path = `role_models.${role}`;
+  const ov = roleOverride(role);
+  const agent = findAgent(AG.cfg.roles[role]);
+  if (camel) {
+    const camelSrc = (src.sources || []).find((s) => s && s.id === "camel");
+    const note =
+      (camelSrc && camelSrc.note) ||
+      "Serves a fleet, so only `auto` is accepted — a pinned model is not available on a standard subscription.";
+    out.push(`<div>Editing is off: ${esc(note)}</div>`);
+    if (ov) out.push(`<div class="oc-warn">⚠ This seat still pins <code>${esc(ov)}</code>, which camelStream ignores — reassign the seat to another agent to remove it.</div>`);
+    return out.join("");
+  }
+  if (src.state === "loading") out.push(`<div>Loading model list…</div>`);
+  else if (src.state === "failed")
+    out.push(
+      `<div>Model list unavailable — type any model id.</div><div><button type="button" class="btn small ghost" data-act="models-retry">Retry</button></div>`
+    );
+  else if (src.state === "ok" && !modelSourcesUsable()) out.push(`<div>No models are offered for this seat — type a model id.</div>`);
+  // Hints belong wherever typing is what is happening: the revealed Custom…
+  // box, or the lone input shown when there is no list to pick from.
+  const typingHere = !camel && (!modelSourcesUsable() || modelCustomActive(path, ov));
+  if (typingHere && src.state === "ok") {
+    const hints = modelTextHintsInner();
+    if (hints) out.push(`<div>${hints}</div>`);
+  }
+  if (agent && seatNeedsPlaceholder(role)) {
+    out.push(
+      ov
+        ? `<div class="oc-warn">⚠ <code>${esc(agent.name)}</code> is a command agent: factory only passes a pinned model through <code>{{model}}</code> in its Arguments — add the placeholder in the agent's drawer, or this save is rejected.</div>`
+        : `<div>A pin on this seat needs <code>{{model}}</code> in ${esc(agent.name)}'s Arguments.</div>`
+    );
+  }
+  if (ov && agent && agent.type === "openai") {
+    out.push(
+      `<div>Removing the pin only unpins this seat — <code>${esc(agent.name)}</code>'s own model (<code>${esc(agent.model || "")}</code>) is required by its config and stays.</div>`
+    );
+  }
+  return out.join("");
+}
+
+function roleModelHTML(role) {
+  const camel = isCamelAgent(AG.cfg.roles[role]);
+  return `<div class="oc-model" data-role-model="${esc(role)}">
+    <div class="oc-model-head">${roleModelHeadInner(role)}</div>
+    <div class="oc-model-row">${roleModelControlInner(role, camel)}</div>
+    <div class="oc-model-notes">${roleModelNotesInner(role, camel)}</div>
+  </div>`;
+}
+
+// Update a model row in place after a keystroke: the input has to keep focus
+// and caret, so only the chrome around it is rebuilt.
+function refreshModelRow(role) {
+  const root = $(`#oc-canvas .oc-model[data-role-model="${role}"]`);
+  if (!root) return;
+  const head = $(".oc-model-head", root);
+  if (head) head.innerHTML = roleModelHeadInner(role);
+  const notes = $(".oc-model-notes", root);
+  if (notes) notes.innerHTML = roleModelNotesInner(role, isCamelAgent(AG.cfg.roles[role]));
+  const clear = $("[data-act='role-model-clear']", root);
+  if (clear) clear.hidden = !roleOverride(role);
+}
+
+// Write a seat's control back into the config. Removal always omits the key:
+// role_models.<role> = "" is a validation error ("model is empty"), so an empty
+// value must mean "no pin", never an empty override.
+function setRoleModel(role, el) {
+  const path = `role_models.${role}`;
+  const isSelect = el.tagName === "SELECT";
+  let next = String(el.value == null ? "" : el.value);
+  if (!isSelect) next = next.trim();
+  const cur = roleOverride(role);
+  if (isSelect && next === MODEL_CUSTOM) {
+    // Reveal the free-text box. No config change yet, so no undo entry.
+    if (AG.modelText[path] !== true) {
+      AG.modelText[path] = true;
+      AG.modelTyping = null;
+      redrawAgents();
+      focusModelCustom(path);
+    }
+    return;
+  }
+  if (isSelect) {
+    const wasCustom = AG.modelText[path] === true;
+    AG.modelText[path] = false;
+    if (next === cur) {
+      if (wasCustom) redrawAgents(); // stepped off Custom… back onto the current value
+      return;
+    }
+    pushUndo(`${role} model → ${next || "from agent"}`);
+    if (next) AG.cfg.role_models[role] = next;
+    else delete AG.cfg.role_models[role];
+    redrawAgents();
+    return;
+  }
+  // The Custom… box (or the lone input when there is no list): one undo entry
+  // per burst — the first keystroke snapshots the config as it was, later
+  // keystrokes ride along until the field is left (change) or anything else
+  // pushes an entry.
+  if (next === cur) return;
+  if (AG.modelTyping !== role) {
+    pushUndo(`${role} model → ${next || "from agent"}`);
+    AG.modelTyping = role;
+  }
+  if (next) AG.cfg.role_models[role] = next;
+  else delete AG.cfg.role_models[role];
+  if (!next && AG.modelText[path] === true) {
+    // An empty pin is not a pin: close the box and show the inherited view.
+    AG.modelText[path] = false;
+    redrawAgents();
+    return;
+  }
+  refreshModelRow(role);
+}
+
+function clearRoleModel(role) {
+  if (!AG.editable || !ROLE_KEYS.includes(role)) return;
+  if (!roleOverride(role)) return;
+  pushUndo(`clear ${role} model pin`);
+  delete AG.cfg.role_models[role]; // delete the key — never write ""
+  AG.modelText[`role_models.${role}`] = false;
+  redrawAgents();
+  toast(`Model pin removed from the ${role} seat`, false, undoLast);
+  const el = fieldInput(`role_models.${role}`);
+  if (el) { try { el.focus(); } catch (_) {} }
 }
 
 function zoneHTML(d) {
@@ -609,6 +1136,7 @@ function zoneHTML(d) {
         nolabel: true, aria: `Assign the ${d.role}`, cls: "oc-assign", dis: AG.editable ? "" : "disabled",
       })}
     </div>
+    ${roleModelHTML(d.role)}
     <div class="oc-cards">${cards}</div>
     <div class="oc-hint"></div>
   </section>`;
@@ -704,6 +1232,10 @@ function cardHTML(name, opts = {}) {
   const m = metaOf(name);
   const held = rolesHeld(name);
   const title = m.title || (opts.role ? cap(opts.role) : name);
+  // A pinned seat reads as `agent (model)` so a run that looks wrong can be
+  // traced straight back to its configuration (the logs label it the same way).
+  const pin = opts.role ? roleOverride(opts.role) : "";
+  const shown = pin ? `${name} (${pin})` : name;
   const badges = [];
   if (opts.role) badges.push(pill(`d-${ROLE_DEPT[opts.role] || "panel"}`, opts.role));
   if (opts.seat !== undefined) held.forEach((r) => badges.push(pill(`d-${ROLE_DEPT[r] || "panel"}`, r)));
@@ -720,7 +1252,7 @@ function cardHTML(name, opts = {}) {
     : "";
   return `<div class="oc-card" role="button" tabindex="0" data-agent="${esc(name)}" aria-label="Edit ${esc(name)}">
     <div class="oc-card-top"><span class="oc-card-title">${esc(title)}</span>${badges.join("")}</div>
-    <div class="oc-card-name">${esc(name)}</div>
+    <div class="oc-card-name">${esc(shown)}</div>
     <div class="oc-card-engine">${esc(engineLine(a))}</div>
     ${health ? `<div class="oc-card-health">${health}</div>` : ""}
   </div>`;
@@ -866,10 +1398,10 @@ function typeFields(x, prefix, isDraft) {
   } else if (t === "openai") {
     h += fld(prefix + "base_url", "Base URL", x.base_url || "", { ph: "https://api.example.com/v1", dis });
     h += fld(prefix + "api_key_env", "API key env var", x.api_key_env || "", { ph: "OPENAI_API_KEY", dis, hint: "Name of the environment variable holding the key." });
-    h += fld(prefix + "model", "Model", x.model || "", { ph: "e.g. gpt-4o-mini", dis });
+    h += modelField(prefix + "model", x.model || "", "openai", dis);
     h += timeout;
   } else {
-    h += fld(prefix + "model", "Model", x.model || "", { ph: "default", dis, hint: "Blank uses the OpenCode default model." });
+    h += modelField(prefix + "model", x.model || "", "opencode", dis);
     h += timeout;
   }
   if (!isDraft && x.readonly_args && x.readonly_args.length) {
@@ -877,6 +1409,31 @@ function typeFields(x, prefix, isDraft) {
   }
   if (showEnv) h += envRowsHTML(isDraft ? null : x.name, env, isDraft);
   return h;
+}
+
+// The drawer's model field is the same picker the role seats use: a dropdown
+// of the enumerated ids grouped by source, with one "Custom… (type an id)"
+// escape hatch for ids no list can carry (Claude, codex). Typing is never the
+// default — it appears only when Custom… is chosen or there is no list at all.
+function modelField(path, value, type, dis) {
+  const typing = modelSourcesUsable() ? modelCustomActive(path, value) : true;
+  const pick = modelPickerHTML(path, value, {
+    dis,
+    aria: "Model",
+    init: initialFor(path, value),
+    // opencode's model is optional ("" = use the OpenCode default) and stays a
+    // legitimate choice; openai's is required by schema, so it never offers an
+    // empty option — just a placeholder until one is picked.
+    emptyLabel: type === "opencode" ? "— default (none) —" : "",
+    requireValue: type === "openai",
+    ph: type === "openai" ? "e.g. gpt-4o-mini" : "default model id",
+  });
+  const base = type === "opencode" ? "“default (none)” uses the OpenCode default model." : "";
+  const hints = typing ? modelTextHintsInner() : "";
+  const hint = [base, hints].filter(Boolean).join("<br>");
+  return `<div class="field"><label for="${fldId(path)}">Model</label>${pick.select}${pick.input}<div class="ferr" hidden></div>${
+    hint ? `<div class="hint">${hint}</div>` : ""
+  }</div>`;
 }
 
 function renderDrawer() {
@@ -1240,6 +1797,11 @@ function serializeCfg() {
   });
   if (!c.test_command) delete c.test_command;
   if (!c.notify_command) delete c.notify_command;
+  // role_models round-trips unchanged when nothing is pinned: with no pins
+  // there is no key at all, exactly like an old config — never "" and never an
+  // empty object. effective_models is derived by GET and unknown to PUT.
+  delete c.effective_models;
+  if (c.role_models && !Object.keys(c.role_models).length) delete c.role_models;
   return c;
 }
 
@@ -1414,6 +1976,16 @@ function applyPath(path, el) {
       if (d.type !== val) { d.type = String(val); renderDrawer(); }
     } else if (parts[1] === "args") {
       d.args = String(val);
+    } else if (parts[1] === "model") {
+      if (String(val) === MODEL_CUSTOM) {
+        AG.modelText["draft.model"] = true;
+        renderDrawer();
+        focusModelCustom("draft.model");
+        return;
+      }
+      if (el.tagName === "SELECT") { AG.modelText["draft.model"] = false; d.model = String(val); renderDrawer(); }
+      else d.model = String(val);
+      return;
     } else if (parts[1] !== "name") {
       d[parts[1]] = String(val);
     } else {
@@ -1440,6 +2012,13 @@ function applyPath(path, el) {
     return;
   }
 
+  if (parts[0] === "role_models") {
+    const role = parts[1];
+    if (!ROLE_KEYS.includes(role)) return;
+    setRoleModel(role, el);
+    return;
+  }
+
   if (parts[0] === "agents") {
     const m = matchAgentIn(AG.cfg.agents, parts);
     if (!m) return;
@@ -1450,13 +2029,31 @@ function applyPath(path, el) {
       const envKey = m.rest.slice(1).join(".");
       setEnvValue(a, envKey, String(val));
       refreshEnvRow(el, a, envKey);
+      renderCanvas(); // CAMEL_BASE_URL decides how the seat's model control renders
       return;
     }
     if (key === "type") {
-      if (a.type !== val) { a.type = String(val); renderDrawer(); }
+      if (a.type !== val) { a.type = String(val); renderDrawer(); renderCanvas(); }
       return;
     }
-    if (key === "args") { a.args = arrSplit(String(val)); return; }
+    if (key === "args") {
+      a.args = arrSplit(String(val));
+      renderCanvas(); // {{model}} in args decides whether a pin is valid
+      return;
+    }
+    if (key === "model") {
+      const p = `agents.${a.name}.model`;
+      if (String(val) === MODEL_CUSTOM) {
+        AG.modelText[p] = true;
+        renderDrawer();
+        focusModelCustom(p);
+        return;
+      }
+      if (el.tagName === "SELECT") { AG.modelText[p] = false; renderDrawer(); }
+      a.model = String(val);
+      renderCanvas(); // the seats this agent fills inherit this model
+      return;
+    }
     a[key] = String(val);
     return;
   }
@@ -1512,6 +2109,7 @@ function onFieldEvent(ev) {
   if (!AG.editable) return;
   clearFieldError(el);
   applyPath(path, el);
+  if (ev.type === "change") AG.modelTyping = null; // leaving a model box ends its undo burst
   markFieldDirty(el);
   syncBar();
 }
@@ -1519,7 +2117,8 @@ function onFieldEvent(ev) {
 function handleAct(el) {
   const act = el.dataset.act;
   if (act === "close") return closeDrawer();
-  if (!AG.editable && act !== "doctor") { toast("This config is read-only", true); return; }
+  // Reading the model list is not an edit, so read-only configs may retry it.
+  if (!AG.editable && act !== "doctor" && act !== "models-retry") { toast("This config is read-only", true); return; }
   if (act === "save") return saveConfig();
   if (act === "revert") return revertConfig();
   if (act === "new-agent") return openNewAgent();
@@ -1530,6 +2129,8 @@ function handleAct(el) {
   if (act === "seat-del") return removeSeat(Number(el.dataset.i));
   if (act === "env-add") return addEnvVar();
   if (act === "env-clear") return toggleEnvClear(el.dataset.k);
+  if (act === "role-model-clear") return clearRoleModel(el.dataset.role);
+  if (act === "models-retry") return retryModelSources();
 }
 
 function onBodyClick(ev) {
