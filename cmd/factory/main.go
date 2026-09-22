@@ -58,6 +58,12 @@ Global flag: --config PATH (default: $FACTORY_CONFIG, <dir>/.factory/config.json
 `
 
 func main() {
+	// Agent credentials live beside factory.json, which the systemd unit
+	// loads as its EnvironmentFile. Reading it here too means a plain shell
+	// behaves like the service. Variables already set are left alone, so an
+	// explicit export wins and PATH is never replaced.
+	config.LoadEnv()
+
 	if len(os.Args) < 2 {
 		// No arguments on a terminal opens the workspace, the way opencode,
 		// hermes and codex do. Anything piped or scripted gets usage instead.
