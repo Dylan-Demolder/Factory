@@ -129,11 +129,12 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/projects/{id}/artifacts", s.handleArtifacts)
 	api("GET /api/projects/{id}/artifact", s.handleArtifact)
 	api("GET /api/config", s.handleConfig)
+	api("PUT /api/config", s.handleConfigSave)
 	api("POST /api/doctor", s.handleDoctor)
 	notFound := s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "no such endpoint")
 	})
-	for _, m := range []string{"GET", "POST", "DELETE"} {
+	for _, m := range []string{"GET", "POST", "PUT", "DELETE"} {
 		mux.Handle(m+" /api/", notFound)
 	}
 
@@ -189,7 +190,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 			h.Set("Access-Control-Allow-Origin", origin)
 			h.Set("Access-Control-Allow-Credentials", "true")
 			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-			h.Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			h.Add("Vary", "Origin")
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
@@ -724,35 +725,78 @@ func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	cfg, path, err := config.Resolve(s.opt.ConfigPath, "")
 	if err != nil {
-		writeJSON(w, map[string]any{"error": err.Error()})
+		writeJSON(w, map[string]any{"error": err.Error(), "fields": config.Fields(err)})
 		return
 	}
+	meta := config.LoadMeta(path)
+	// Args and command are expanded by config.Parse ({{config_dir}} → a real
+	// path). For an editor the file is the truth: handing back the expanded
+	// form would freeze absolute paths into the config on the next save.
+	rawAgents := config.RawFields(path)
 	type agentInfo struct {
-		Name    string `json:"name"`
-		Type    string `json:"type"`
-		Model   string `json:"model,omitempty"`
-		Command string `json:"command,omitempty"`
-		Timeout string `json:"timeout,omitempty"`
+		Name         string             `json:"name"`
+		Type         string             `json:"type"`
+		Model        string             `json:"model,omitempty"`
+		Command      string             `json:"command,omitempty"`
+		Args         []string           `json:"args,omitempty"`
+		ReadOnlyArgs []string           `json:"readonly_args,omitempty"`
+		BaseURL      string             `json:"base_url,omitempty"`
+		APIKeyEnv    string             `json:"api_key_env,omitempty"`
+		Timeout      string             `json:"timeout,omitempty"`
+		Env          map[string]*string `json:"env,omitempty"`
+		EnvSecret    []string           `json:"env_secret,omitempty"`
+		Meta         agentMeta          `json:"meta"`
 	}
 	var agents []agentInfo
 	for name, a := range cfg.Agents {
-		info := agentInfo{Name: name, Type: a.Type, Model: a.Model, Command: filepath.Base(a.Command)}
+		info := agentInfo{
+			Name: name, Type: a.Type, Model: a.Model, Command: a.Command,
+			Args: a.Args, ReadOnlyArgs: a.ReadOnlyArgs,
+			BaseURL: a.BaseURL, APIKeyEnv: a.APIKeyEnv, Meta: meta[name],
+		}
+		if raw, ok := rawAgents[name]; ok {
+			if cmd, ok := raw["command"].(string); ok {
+				info.Command = cmd
+			}
+			if args, ok := raw["args"].([]any); ok {
+				info.Args = make([]string, 0, len(args))
+				for _, v := range args {
+					if s, ok := v.(string); ok {
+						info.Args = append(info.Args, s)
+					}
+				}
+			}
+		}
 		if a.Timeout.Duration > 0 {
 			info.Timeout = a.Timeout.String()
 		}
-		if a.Type == "openai" {
-			info.Command = ""
+		if len(a.Env) > 0 {
+			info.Env = make(map[string]*string, len(a.Env))
+			for k, v := range a.Env {
+				if config.SecretEnv(k, v) {
+					// nil means "a value exists on disk and is being withheld".
+					info.Env[k] = nil
+					info.EnvSecret = append(info.EnvSecret, k)
+					continue
+				}
+				val := v
+				info.Env[k] = &val
+			}
+			sort.Strings(info.EnvSecret)
 		}
 		agents = append(agents, info)
 	}
 	sort.Slice(agents, func(i, j int) bool { return agents[i].Name < agents[j].Name })
 	writeJSON(w, map[string]any{
-		"path":       path,
-		"agents":     agents,
-		"roles":      cfg.Roles,
-		"roundtable": cfg.Roundtable,
-		"limits":     cfg.Limits,
-		"notify":     cfg.NotifyCommand != "",
+		"path":           path,
+		"editable":       true,
+		"agents":         agents,
+		"roles":          cfg.Roles,
+		"roundtable":     cfg.Roundtable,
+		"limits":         cfg.Limits,
+		"test_command":   cfg.TestCommand,
+		"notify_command": cfg.NotifyCommand,
+		"notify":         cfg.NotifyCommand != "",
 	})
 }
 
