@@ -21,12 +21,17 @@ import (
 	"github.com/dylan-demolder/factory/internal/config"
 	"github.com/dylan-demolder/factory/internal/proc"
 	"github.com/dylan-demolder/factory/internal/state"
+	"github.com/dylan-demolder/factory/internal/tui"
 	"github.com/dylan-demolder/factory/internal/ui"
 )
 
 const usage = `factory — submit a project, spec it together, then let your agents build it.
 
 Usage:
+  factory                               open the interactive workspace (on a terminal)
+  factory tui [flags]                   the same, as an explicit command
+      --workspace DIR   where projects live (default ~/factory-projects)
+      --config PATH     config to use for new projects
   factory init                         write factory.json + CAMEL adapter to the current directory
   factory doctor                       check every configured agent responds
   factory new <name> [flags]           create a project, run the spec interview, then hand off
@@ -54,6 +59,15 @@ Global flag: --config PATH (default: $FACTORY_CONFIG, <dir>/.factory/config.json
 
 func main() {
 	if len(os.Args) < 2 {
+		// No arguments on a terminal opens the workspace, the way opencode,
+		// hermes and codex do. Anything piped or scripted gets usage instead.
+		if isTerminal(os.Stdout) {
+			if err := runTUI(nil); err != nil {
+				fmt.Fprintln(os.Stderr, "factory:", err)
+				os.Exit(1)
+			}
+			return
+		}
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
@@ -81,6 +95,8 @@ func main() {
 		err = cmdStop(args)
 	case "serve":
 		err = cmdServe(ctx, args)
+	case "tui":
+		err = runTUI(args)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:
@@ -109,6 +125,39 @@ func parse(fs *flag.FlagSet, args []string) ([]string, error) {
 		pos = append(pos, fs.Arg(0))
 		args = fs.Args()[1:]
 	}
+}
+
+// defaultWorkspace mirrors `factory serve`'s default so the terminal and the
+// browser look at the same projects.
+func defaultWorkspace() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "factory-projects"
+	}
+	return filepath.Join(home, "factory-projects")
+}
+
+// runTUI starts the interactive workspace.
+func runTUI(args []string) error {
+	fs := flag.NewFlagSet("tui", flag.ExitOnError)
+	workspace := fs.String("workspace", envOr("FACTORY_WORKSPACE", defaultWorkspace()), "directory holding projects")
+	cfgFlag := fs.String("config", os.Getenv("FACTORY_CONFIG"), "config file for new projects")
+	if _, err := parse(fs, args); err != nil {
+		return err
+	}
+	// Builds are detached from this process; they need the path of the binary
+	// that launched them so `factory run` can be started in the background.
+	if exe, err := os.Executable(); err == nil {
+		tui.SetExe(exe)
+	}
+	return tui.Run(*workspace, *cfgFlag, version)
+}
+
+// isTerminal reports whether f is a character device — i.e. a person, and not
+// a pipe or a CI log, is on the other end.
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
 func projectDir(pos []string) (string, error) {
