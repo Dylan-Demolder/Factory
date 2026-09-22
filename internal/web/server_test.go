@@ -363,3 +363,157 @@ func TestDoctorAndConfig(t *testing.T) {
 		t.Fatalf("doctor: %v", res)
 	}
 }
+
+func putConfig(e *env, doc, meta any) (int, map[string]any) {
+	return e.do("PUT", "/api/config", map[string]any{"config": doc, "meta": meta})
+}
+
+// A save round trip must not damage the config: placeholders stay symbolic,
+// and a credential the browser was never shown is still on disk afterwards.
+func TestConfigSaveRoundTrip(t *testing.T) {
+	e := setup(t, nil)
+	e.login()
+	_, cfg := e.do("GET", "/api/config", nil)
+	path := cfg["path"].(string)
+
+	doc := map[string]any{
+		// Editor bookkeeping the browser adds; it must be tolerated.
+		"path": path, "editable": true, "notify": false,
+		"agents": []any{map[string]any{
+			"name": "a", "type": "command", "command": "python3",
+			"args": []string{"{{config_dir}}/adapters/x.py"}, "timeout": "10m",
+			"env":  map[string]any{"CAMEL_MODEL": "auto", "CAMEL_API_KEY": "sk-live-abc123"},
+			"meta": map[string]any{"title": "ignored"},
+		}},
+		"roles":      cfg["roles"],
+		"roundtable": cfg["roundtable"],
+		"limits":     cfg["limits"],
+	}
+	meta := map[string]any{"a": map[string]any{"title": "Guest", "dept": "panel"}}
+	if code, out := putConfig(e, doc, meta); code != 200 {
+		t.Fatalf("save: %d %v", code, out)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "{{config_dir}}") {
+		t.Fatalf("placeholder was frozen into an absolute path:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "sk-live-abc123") {
+		t.Fatal("secret lost on save")
+	}
+
+	// The secret must come back withheld, not in the clear.
+	_, cfg = e.do("GET", "/api/config", nil)
+	ag := cfg["agents"].([]any)[0].(map[string]any)
+	env := ag["env"].(map[string]any)
+	if env["CAMEL_API_KEY"] != nil {
+		t.Fatalf("secret exposed to the browser: %v", env["CAMEL_API_KEY"])
+	}
+	if env["CAMEL_MODEL"] != "auto" {
+		t.Fatalf("plain value lost: %v", env["CAMEL_MODEL"])
+	}
+	secrets := ag["env_secret"].([]any)
+	if len(secrets) != 1 || secrets[0] != "CAMEL_API_KEY" {
+		t.Fatalf("env_secret = %v", secrets)
+	}
+	if got := ag["args"].([]any)[0]; got != "{{config_dir}}/adapters/x.py" {
+		t.Fatalf("args = %v", got)
+	}
+	if title := ag["meta"].(map[string]any)["title"]; title != "Guest" {
+		t.Fatalf("meta = %v", ag["meta"])
+	}
+
+	// Saving what the browser received (with the nil secret) must inherit it.
+	if code, out := putConfig(e, map[string]any{
+		"agents": cfg["agents"], "roles": cfg["roles"],
+		"roundtable": cfg["roundtable"], "limits": cfg["limits"],
+	}, map[string]any{"a": map[string]any{"title": "Guest", "dept": "panel"}}); code != 200 {
+		t.Fatalf("save round 2: %d %v", code, out)
+	}
+	raw, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "sk-live-abc123") {
+		t.Fatalf("withheld secret was blanked on re-save:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "null") {
+		t.Fatalf("nil secret written to disk as null:\n%s", raw)
+	}
+
+	metaBytes, err := os.ReadFile(filepath.Join(filepath.Dir(path), "org.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(metaBytes), `"Guest"`) {
+		t.Fatalf("org metadata not written: %s", metaBytes)
+	}
+}
+
+// A rejected save must report the field at fault and leave the file untouched.
+func TestConfigSaveRejectsInvalid(t *testing.T) {
+	e := setup(t, nil)
+	e.login()
+	_, cfg := e.do("GET", "/api/config", nil)
+	path := cfg["path"].(string)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	roles := cfg["roles"].(map[string]any)
+	roles["reviewer"] = "ghost"
+	code, out := putConfig(e, map[string]any{
+		"agents": cfg["agents"], "roles": roles,
+		"roundtable": cfg["roundtable"], "limits": cfg["limits"],
+	}, map[string]any{})
+	if code != 400 {
+		t.Fatalf("status = %d, want 400: %v", code, out)
+	}
+	fields := out["fields"].([]any)
+	if len(fields) != 1 {
+		t.Fatalf("fields = %v", fields)
+	}
+	if f := fields[0].(map[string]any)["field"]; f != "roles.reviewer" {
+		t.Fatalf("field = %v, want roles.reviewer", f)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("a rejected save modified the config")
+	}
+}
+
+// Unknown keys must still be rejected — only the editor's own bookkeeping is
+// stripped before validation.
+func TestConfigSaveStillCatchesTypos(t *testing.T) {
+	e := setup(t, nil)
+	e.login()
+	_, cfg := e.do("GET", "/api/config", nil)
+	agents := cfg["agents"].([]any)
+	agents[0].(map[string]any)["modle"] = "typo"
+	code, out := putConfig(e, map[string]any{
+		"agents": agents, "roles": cfg["roles"],
+		"roundtable": cfg["roundtable"], "limits": cfg["limits"],
+	}, map[string]any{})
+	if code != 400 {
+		t.Fatalf("status = %d, want 400: %v", code, out)
+	}
+	fields := out["fields"].([]any)
+	if len(fields) != 1 || fields[0].(map[string]any)["field"] != "modle" {
+		t.Fatalf("fields = %v", fields)
+	}
+}
+
+func TestConfigSaveRequiresAuth(t *testing.T) {
+	e := setup(t, nil) // never logged in
+	code, _ := e.do("PUT", "/api/config", map[string]any{"config": map[string]any{}})
+	if code != 401 {
+		t.Fatalf("status = %d, want 401", code)
+	}
+}

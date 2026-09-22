@@ -108,18 +108,72 @@ func (r Roundtable) SpecEnabled() bool  { return on(r.OnSpec) }
 func (r Roundtable) PlanEnabled() bool  { return on(r.OnPlan) }
 func (r Roundtable) TasksEnabled() bool { return on(r.OnTasks) }
 
+// FieldError ties a rejection to the config path it belongs to, so a caller
+// (the web editor) can show the message next to the input that caused it.
+type FieldError struct {
+	Field string `json:"field"`
+	Msg   string `json:"message"`
+}
+
+func (e FieldError) Error() string { return e.Msg }
+
+// ParseError is what Parse returns when a config is rejected. Its message is
+// the same newline-joined text a plain error would have produced.
+type ParseError struct {
+	Fields []FieldError
+	cause  error
+}
+
+func (e *ParseError) Error() string {
+	msgs := make([]string, 0, len(e.Fields))
+	for _, f := range e.Fields {
+		msgs = append(msgs, f.Msg)
+	}
+	return strings.Join(msgs, "\n")
+}
+
+func (e *ParseError) Unwrap() error { return e.cause }
+
+// Fields returns the per-field failures behind err, if Parse rejected data.
+func Fields(err error) []FieldError {
+	var pe *ParseError
+	if errors.As(err, &pe) {
+		return pe.Fields
+	}
+	return nil
+}
+
+// unknownJSONField pulls the name out of encoding/json's
+// `json: unknown field "x"` error, or "" for any other failure.
+func unknownJSONField(err error) string {
+	const marker = "json: unknown field "
+	s := err.Error()
+	i := strings.Index(s, marker)
+	if i < 0 {
+		return ""
+	}
+	s = strings.TrimPrefix(s[i+len(marker):], `"`)
+	if j := strings.Index(s, `"`); j >= 0 {
+		return s[:j]
+	}
+	return ""
+}
+
 // Parse decodes and validates a config. dir resolves {{config_dir}}.
 func Parse(data []byte, dir string) (*Config, error) {
 	var c Config
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&c); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
+		return nil, &ParseError{
+			cause:  err,
+			Fields: []FieldError{{Field: unknownJSONField(err), Msg: "parse config: " + err.Error()}},
+		}
 	}
 	c.Dir = dir
 	c.applyDefaults()
-	if err := c.validate(); err != nil {
-		return nil, err
+	if ferrs := c.validate(); len(ferrs) > 0 {
+		return nil, &ParseError{Fields: ferrs}
 	}
 	return &c, nil
 }
@@ -195,51 +249,55 @@ func (c *Config) Expand(s string) string {
 	return strings.ReplaceAll(s, "{{config_dir}}", c.Dir)
 }
 
-func (c *Config) validate() error {
-	var errs []error
+func (c *Config) validate() []FieldError {
+	var errs []FieldError
+	fail := func(field, format string, a ...any) {
+		errs = append(errs, FieldError{Field: field, Msg: fmt.Sprintf(format, a...)})
+	}
 	if len(c.Agents) == 0 {
-		errs = append(errs, errors.New("no agents configured"))
+		fail("agents", "no agents configured")
 	}
 	for name, a := range c.Agents {
 		switch a.Type {
 		case "opencode":
 		case "command":
 			if a.Command == "" {
-				errs = append(errs, fmt.Errorf("agent %q: command is required", name))
+				fail("agents."+name+".command", "agent %q: command is required", name)
 			}
 		case "openai":
 			if a.BaseURL == "" || a.Model == "" {
-				errs = append(errs, fmt.Errorf("agent %q: base_url and model are required", name))
+				fail("agents."+name, "agent %q: base_url and model are required", name)
 			}
 		default:
-			errs = append(errs, fmt.Errorf("agent %q: unknown type %q (want opencode, command or openai)", name, a.Type))
+			fail("agents."+name+".type", "agent %q: unknown type %q (want opencode, command or openai)", name, a.Type)
 		}
 	}
-	check := func(role, name string) {
+	check := func(field, role, name string) {
 		if name == "" {
-			errs = append(errs, fmt.Errorf("role %s: no agent assigned", role))
+			fail(field, "role %s: no agent assigned", role)
 		} else if _, ok := c.Agents[name]; !ok {
-			errs = append(errs, fmt.Errorf("role %s: unknown agent %q", role, name))
+			fail(field, "role %s: unknown agent %q", role, name)
 		}
 	}
-	check("interviewer", c.Roles.Interviewer)
-	check("planner", c.Roles.Planner)
-	check("builder", c.Roles.Builder)
-	check("reviewer", c.Roles.Reviewer)
-	check("moderator", c.Roles.Moderator)
+	check("roles.interviewer", "interviewer", c.Roles.Interviewer)
+	check("roles.planner", "planner", c.Roles.Planner)
+	check("roles.builder", "builder", c.Roles.Builder)
+	check("roles.reviewer", "reviewer", c.Roles.Reviewer)
+	check("roles.moderator", "moderator", c.Roles.Moderator)
 	if b, ok := c.Agents[c.Roles.Builder]; ok && b.Type == "openai" {
-		errs = append(errs, fmt.Errorf("role builder: agent %q is type openai and cannot edit files; use opencode or a command agent", c.Roles.Builder))
+		fail("roles.builder", "role builder: agent %q is type openai and cannot edit files; use opencode or a command agent", c.Roles.Builder)
 	}
 	for i, p := range c.Roundtable.Participants {
-		check(fmt.Sprintf("roundtable.participants[%d]", i), p.Agent)
+		role := fmt.Sprintf("roundtable.participants[%d]", i)
+		check(fmt.Sprintf("roundtable.participants.%d.agent", i), role, p.Agent)
 	}
-	return errors.Join(errs...)
+	return errs
 }
 
-// Resolve finds the config to use. Order: explicit path, $FACTORY_CONFIG,
-// <projectRoot>/.factory/config.json (if projectRoot given), ./factory.json,
-// ~/.config/factory/factory.json.
-func Resolve(explicit, projectRoot string) (*Config, string, error) {
+// ResolvePath finds the config file to use, in the same order as Resolve, but
+// does not read it. A config that no longer parses still resolves, so the web
+// editor can open it and repair it.
+func ResolvePath(explicit, projectRoot string) (string, error) {
 	var candidates []string
 	if explicit != "" {
 		candidates = []string{explicit}
@@ -258,16 +316,27 @@ func Resolve(explicit, projectRoot string) (*Config, string, error) {
 	for _, path := range candidates {
 		if _, err := os.Stat(path); err != nil {
 			if explicit != "" {
-				return nil, "", err
+				return "", err
 			}
 			continue
 		}
-		c, err := Load(path)
-		if err != nil {
-			return nil, "", err
-		}
-		abs, _ := filepath.Abs(path)
-		return c, abs, nil
+		return path, nil
 	}
-	return nil, "", errors.New("no config found; run `factory init` to create factory.json")
+	return "", errors.New("no config found; run `factory init` to create factory.json")
+}
+
+// Resolve finds the config to use. Order: explicit path, $FACTORY_CONFIG,
+// <projectRoot>/.factory/config.json (if projectRoot given), ./factory.json,
+// ~/.config/factory/factory.json.
+func Resolve(explicit, projectRoot string) (*Config, string, error) {
+	path, err := ResolvePath(explicit, projectRoot)
+	if err != nil {
+		return nil, "", err
+	}
+	c, err := Load(path)
+	if err != nil {
+		return nil, "", err
+	}
+	abs, _ := filepath.Abs(path)
+	return c, abs, nil
 }
