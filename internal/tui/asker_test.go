@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -21,8 +22,11 @@ func waitForWaiting(t *testing.T, a *Asker) {
 }
 
 func TestAskBlocksUntilAnswered(t *testing.T) {
-	var notified int
-	a := NewAsker(func() { notified++ })
+	// The notify callback fires on whichever goroutine mutated the
+	// transcript — Ask's goroutine and the answering goroutine both do —
+	// so the counter has to be safe to touch from all of them.
+	var notified atomic.Int32
+	a := NewAsker(func() { notified.Add(1) })
 
 	type result struct {
 		text string
@@ -60,7 +64,7 @@ func TestAskBlocksUntilAnswered(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Ask did not release after Answer")
 	}
-	if notified == 0 {
+	if notified.Load() == 0 {
 		t.Error("notify callback never fired — the UI would never redraw")
 	}
 }
