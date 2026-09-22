@@ -4,7 +4,7 @@
 
 factory takes a project from a rough idea to working software you can test, using the coding agents you already pay for: opencode for building, plus as many other agents as you like (such as CAMEL-AI) for discussion and review. It interviews you until the idea can be built, has your agents argue over the spec, and then works on its own. It plans the work, holds a design roundtable before every task, builds, runs your tests, rejects fake tests, tries out every genuine use case the way a real user would, and loops until it's done.
 
-It's a lightweight alternative to heavier orchestrators such as Paperclip: **one Go binary, no dependencies, no database, no containers.** Everything is plain files inside your project, so you can stop it at any moment and pick up exactly where it left off. It comes with a **web interface** you can run on your Linux machine and reach from anywhere, including from inside your own website.
+It's a lightweight alternative to heavier orchestrators such as Paperclip: **one Go binary, no database, no containers, no runtime dependencies** (the terminal interface's UI library is compiled in, so there is nothing to install alongside it). Everything is plain files inside your project, so you can stop it at any moment and pick up exactly where it left off. It comes with a **terminal workspace** for driving builds yourself and a **web interface** you can run on your Linux machine and reach from anywhere, including from inside your own website.
 
 ![Project overview](docs/images/overview.png)
 
@@ -24,6 +24,7 @@ It's a lightweight alternative to heavier orchestrators such as Paperclip: **one
   - [How testing layers stack up](#how-testing-layers-stack-up)
 - [Quick start](#quick-start)
 - [Setting up your agents](#setting-up-your-agents)
+- [The terminal workspace](#the-terminal-workspace)
 - [The web interface](#the-web-interface)
 - [Running it on your Linux machine](#running-it-on-your-linux-machine)
 - [Remote control and adding it to your website](#remote-control-and-adding-it-to-your-website)
@@ -298,6 +299,30 @@ Placeholders in `command`/`args`: `{{prompt}}`, `{{prompt_file}}`, `{{model}}`, 
 
 ---
 
+## The terminal workspace
+
+Run `factory` on a terminal and it opens an interactive workspace: the same features as the web interface, but built for sitting in rather than glancing at. The web UI is the informational side — watch a long build, check status from your phone. The terminal is where you drive.
+
+```text
+◆ factory                                             Org chart
+─────────────────────────────────────────────────────────────────
+ Projects                          Org chart
+   No projects yet.                /home/you/.config/factory/factory.json · 8 agents
+                                   Roles
+                                   ❯ interviewer  oc-product  OpenCode Go · glm-5.3 (ro)
+                                      Product Owner · spec — interviews you until it's buildable
+                                   Roundtable │ 7 calls/table │
+                                   3 seat(s) × 2 round(s) + 1 = 7 agent calls per table
+```
+
+- **`1`–`4`** switch screens (Projects · New · Org chart · Doctor), **`ctrl+k`** opens a filterable command palette, **`?`** shows the key legend, **`q`** quits, **`esc`** backs out one level at a time.
+- The **org chart** is fully editable from the keyboard: `←`/`→` cycles which agent fills a role or sits in a seat, `⏎` edits an agent's title/department/notes, `p` edits a persona, `+`/`x` add and remove seats, `[`/`]` reorder, `a` adds an agent, `d` deletes, `s` saves. It refuses an `openai`-type builder and says why, and refuses to discard unsaved edits silently.
+- The **project** screen has Overview · Interview · Log · Files tabs. The interview is a chat: type an answer, `y` to approve, `/done` to skip to the spec. The log tails incrementally and only jumps to the bottom if you were already there.
+- Builds are **detached**: approving the spec forks `factory run`, so leaving the terminal does not stop it — re-open the project to watch it.
+- Everything reads the same plain files as the web interface, so both can drive one workspace: start `factory serve` and it picks the projects straight up.
+
+`factory` with no arguments opens it when stdout is a terminal; piped or scripted, it prints usage instead. `factory tui --workspace DIR --config PATH` is the explicit form.
+
 ## The web interface
 
 ```sh
@@ -500,6 +525,10 @@ Keep in mind that the builder runs with `edit` and `bash` allowed inside the pro
 ## CLI reference
 
 ```
+factory                               open the interactive workspace (on a terminal)
+factory tui [flags]                   the same, as an explicit command
+    --workspace DIR       where projects live (default ~/factory-projects)
+    --config PATH         config to use for new projects
 factory init [--force]                    write factory.json + adapters/camel_agent.py here
 factory doctor [--config F]               ping every agent, show role mapping
 factory new <name> [flags]                create project → interview → approve → offer to start
@@ -702,6 +731,7 @@ internal/config/    config schema, defaults, validation; embedded example + CAME
 internal/state/     project state and atomic file store
 internal/extract/   robust JSON extraction from LLM output
 internal/ui/        terminal prompter and the Asker interface shared with the web chat
+internal/tui/       the terminal workspace: screens, org chart editor, interview Asker
 internal/proc/      process groups, detaching, pid checks
 ```
 
