@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/dylan-demolder/factory-/internal/agent"
-	"github.com/dylan-demolder/factory-/internal/extract"
-	"github.com/dylan-demolder/factory-/internal/state"
+	"github.com/dylan-demolder/factory/internal/agent"
+	"github.com/dylan-demolder/factory/internal/extract"
+	"github.com/dylan-demolder/factory/internal/state"
 )
 
 const noPreference = "(no preference — use your best judgement)"

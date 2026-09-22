@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dylan-demolder/factory-/internal/web"
+	"github.com/dylan-demolder/factory/internal/web"
 )
 
 type multiFlag []string

@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dylan-demolder/factory-/internal/app"
-	"github.com/dylan-demolder/factory-/internal/state"
+	"github.com/dylan-demolder/factory/internal/app"
+	"github.com/dylan-demolder/factory/internal/state"
 )
 
 const token = "test-token-0123456789"

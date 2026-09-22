@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dylan-demolder/factory-/internal/agent"
-	"github.com/dylan-demolder/factory-/internal/proc"
-	"github.com/dylan-demolder/factory-/internal/state"
+	"github.com/dylan-demolder/factory/internal/agent"
+	"github.com/dylan-demolder/factory/internal/proc"
+	"github.com/dylan-demolder/factory/internal/state"
 )
 
 const (

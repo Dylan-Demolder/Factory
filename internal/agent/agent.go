@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dylan-demolder/factory-/internal/config"
+	"github.com/dylan-demolder/factory/internal/config"
 )
 
 // Request is one prompt sent to an agent.

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dylan-demolder/factory-/internal/config"
+	"github.com/dylan-demolder/factory/internal/config"
 )
 
 // OpenAI calls an OpenAI-compatible chat completions endpoint. It cannot

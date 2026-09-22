@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dylan-demolder/factory-/internal/agent"
-	"github.com/dylan-demolder/factory-/internal/config"
+	"github.com/dylan-demolder/factory/internal/agent"
+	"github.com/dylan-demolder/factory/internal/config"
 )
 
 // Roundtable runs a structured multi-agent discussion:

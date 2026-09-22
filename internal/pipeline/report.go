@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dylan-demolder/factory-/internal/state"
+	"github.com/dylan-demolder/factory/internal/state"
 )
 
 // Finish writes REPORT.md, commits it, and sends the completion notice.

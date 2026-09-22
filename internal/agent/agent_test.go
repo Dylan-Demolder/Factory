@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dylan-demolder/factory-/internal/config"
+	"github.com/dylan-demolder/factory/internal/config"
 )
 
 func TestCommandStdin(t *testing.T) {

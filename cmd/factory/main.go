@@ -16,12 +16,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dylan-demolder/factory-/internal/agent"
-	"github.com/dylan-demolder/factory-/internal/app"
-	"github.com/dylan-demolder/factory-/internal/config"
-	"github.com/dylan-demolder/factory-/internal/proc"
-	"github.com/dylan-demolder/factory-/internal/state"
-	"github.com/dylan-demolder/factory-/internal/ui"
+	"github.com/dylan-demolder/factory/internal/agent"
+	"github.com/dylan-demolder/factory/internal/app"
+	"github.com/dylan-demolder/factory/internal/config"
+	"github.com/dylan-demolder/factory/internal/proc"
+	"github.com/dylan-demolder/factory/internal/state"
+	"github.com/dylan-demolder/factory/internal/ui"
 )
 
 const usage = `factory — submit a project, spec it together, then let your agents build it.
