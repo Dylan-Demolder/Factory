@@ -64,3 +64,30 @@ func TestEmbeddedCamelAdapterAvoidsTracebacks(t *testing.T) {
 		t.Error("expected broad catches around tool and model calls so failures stay one line")
 	}
 }
+
+// A builder that cannot set an executable bit cannot satisfy a criterion
+// asking for one: write_file always creates 0644, which is how wordcnt's
+// reviewer rejected a task four times. Builders must get that tool and
+// reviewers must not.
+func TestEmbeddedCamelAdapterCanMarkExecutable(t *testing.T) {
+	if !strings.Contains(CamelAdapter, "make_executable") {
+		t.Fatal("the adapter has no way to set an executable bit")
+	}
+	i := strings.Index(CamelAdapter, "WRITE_TOOLS =")
+	if i < 0 {
+		t.Fatal("no WRITE_TOOLS list found")
+	}
+	if !strings.Contains(CamelAdapter[i:], "make_executable") {
+		t.Error("make_executable is missing from WRITE_TOOLS — builders cannot chmod")
+	}
+	// The read-only set must not include it: reviewers are read-only by
+	// construction, so check the READ_TOOLS declaration specifically rather
+	// than the text before WRITE_TOOLS (which contains the function itself).
+	r := strings.Index(CamelAdapter, "READ_TOOLS =")
+	if r < 0 {
+		t.Fatal("no READ_TOOLS list found")
+	}
+	if strings.Contains(CamelAdapter[r:i], "make_executable") {
+		t.Error("make_executable leaked into READ_TOOLS — reviewers could chmod files")
+	}
+}
