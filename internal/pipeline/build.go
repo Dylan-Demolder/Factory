@@ -112,6 +112,34 @@ func (e *Engine) runTask(ctx context.Context, t *state.Task) error {
 	}
 
 	for t.Attempts < cfg.Limits.MaxTaskAttempts {
+		// A failure that repeats points at the brief, not at the builder:
+		// hand the design roundtable the history and let it correct the
+		// approach once, rather than spending the remaining attempts on the
+		// same instruction. Bounded to one re-brief per task.
+		if cfg.Roundtable.TasksEnabled() && t.Rebriefs == 0 {
+			if sig, n := mostRepeated(t.Failures); n >= 2 {
+				e.logf("  %s failed identically %d times (%s); re-running the design roundtable", t.ID, n, sig)
+				material := taskMaterial(e.P, t, e.files(300)) +
+					"\n\n## Failure history — the previous brief led here\n" + failureHistory(t) +
+					"\nThe previous brief may itself be wrong. If its suggested code cannot compile " +
+					"or fit this codebase, say so explicitly and give a corrected approach.\n"
+				reBrief, err := e.Roundtable(ctx, "task-"+t.ID+"-rebrief", taskRoundtableTopic(t),
+					material, config.RoleModerator, taskSynthesis)
+				if err != nil {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					e.logf("  re-brief failed (%v); continuing with the existing brief", err)
+				} else if strings.TrimSpace(reBrief) != "" {
+					t.Brief = strings.TrimSpace(reBrief)
+					t.Rebriefs++
+					t.LastFeedback = "" // the corrected brief supersedes it
+					e.Store.Write(fmt.Sprintf("tasks/%s-brief-re%d.md", t.ID, t.Rebriefs), t.Brief)
+					e.save()
+				}
+			}
+		}
+
 		t.Attempts++
 		e.save()
 		e.logf("  attempt %d/%d: building with %s", t.Attempts, cfg.Limits.MaxTaskAttempts, e.roleLabel(config.RoleBuilder))
@@ -123,8 +151,12 @@ func (e *Engine) runTask(ctx context.Context, t *state.Task) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			t.LastFeedback = "The builder failed to complete: " + err.Error()
+			sig := failureSignature("error: " + err.Error())
+			t.Failures = append(t.Failures, state.Failure{Attempt: t.Attempts, Sig: sig})
+			t.LastFeedback = repeatNote(t.Failures, sig) +
+				"The builder failed to complete: " + err.Error()
 			e.logf("  builder error: %v", err)
+			e.save()
 			continue
 		}
 		e.Store.Write(fmt.Sprintf("tasks/%s-attempt-%d-builder.md", t.ID, t.Attempts), summary)
@@ -136,7 +168,14 @@ func (e *Engine) runTask(ctx context.Context, t *state.Task) error {
 		}
 		if !tr.Passed {
 			e.logf("  tests failed (exit %d)", tr.ExitCode)
-			t.LastFeedback = fmt.Sprintf("The test suite failed (`%s`, exit code %d). Output (tail):\n%s", e.P.TestCommand, tr.ExitCode, fence("", tr.Output))
+			sig := failureSignature(tr.Output)
+			t.Failures = append(t.Failures, state.Failure{Attempt: t.Attempts, Sig: sig})
+			// Naming a repeat is what stops a builder from reintroducing an
+			// error it already fixed two attempts ago.
+			t.LastFeedback = repeatNote(t.Failures, sig) +
+				fmt.Sprintf("The test suite failed (`%s`, exit code %d). Output (tail):\n%s",
+					e.P.TestCommand, tr.ExitCode, fence("", tr.Output))
+			e.save()
 			continue
 		}
 		e.logf("  tests passed in %s; reviewing with %s", tr.Duration.Round(time.Second), e.roleLabel(config.RoleReviewer))
