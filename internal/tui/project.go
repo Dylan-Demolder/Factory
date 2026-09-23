@@ -26,9 +26,10 @@ const (
 	tabInterview
 	tabLog
 	tabFiles
+	tabTasks
 )
 
-var projectTabLabels = []string{"Overview", "Interview", "Log", "Files"}
+var projectTabLabels = []string{"Overview", "Interview", "Log", "Files", "Tasks"}
 
 // Budgets so a giant run.log or artifact cannot blow up memory: we tail and
 // cap instead of slurping.
@@ -49,6 +50,11 @@ type projectState struct {
 
 	tab     int
 	session *interview // nil when no interview is running
+
+	// Tasks tab: the selected row, and a pending second press of u —
+	// re-queueing resets an attempt counter, so like deleting it takes two.
+	taskSel     int
+	taskConfirm string
 
 	// The answer box. It is focused only on the Interview tab while an
 	// interview can take answers — exactly when typing() must swallow the
@@ -171,6 +177,11 @@ func (m *Model) setProjTab(i int) tea.Cmd {
 	case tabInterview:
 		if s := m.proj.session; s != nil && s.active {
 			return m.proj.input.Focus()
+		}
+	case tabTasks:
+		m.proj.taskConfirm = ""
+		if st := m.proj.st; st != nil {
+			m.proj.taskSel = firstBlockedTask(st.Tasks)
 		}
 	}
 	return nil
@@ -330,6 +341,16 @@ func (m Model) updateProject(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
+	case taskRetryMsg:
+		if msg.err != nil {
+			return m, sayStatus(msg.err.Error(), true)
+		}
+		text := "re-queued " + msg.id
+		if len(msg.released) > 0 {
+			text += " · released " + strings.Join(msg.released, ", ")
+		}
+		return m, tea.Batch(m.projectRefresh(),
+			sayStatus(text+" — start the build to run it", false))
 	case tea.KeyMsg:
 		return m.projectKey(msg)
 	}
@@ -389,6 +410,8 @@ func (m Model) projectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.logKey(msg, key)
 	case tabFiles:
 		return m.filesKey(msg, key)
+	case tabTasks:
+		return m.tasksKey(msg, key)
 	default:
 		return m.overviewKey(key)
 	}
@@ -785,6 +808,8 @@ func (m Model) projectBody(w, pane int) string {
 		body = m.viewLog(w, pane)
 	case tabFiles:
 		body = m.viewFiles(w, pane)
+	case tabTasks:
+		body = m.viewTasks(w, pane)
 	default:
 		body = m.viewOverview(w, pane)
 	}
@@ -859,6 +884,8 @@ func (m Model) projectKeys() string {
 			return "↑↓ scroll · g/G ends · esc/q close · h/l tabs"
 		}
 		return "↑↓ move · ⏎ open · h/l tabs · esc back"
+	case tabTasks:
+		return "↑↓ select · u re-queue blocked (twice) · h/l tabs"
 	default:
 		_, hint := m.overviewAction()
 		if !m.proj.sum.Running && m.projPhase() != state.PhaseSpec {
@@ -1221,4 +1248,139 @@ func clipBlock(s string, n int) string {
 		return s
 	}
 	return strings.Join(lines[:n], "\n")
+}
+
+// ---- tasks tab ----
+
+// taskRetryMsg is retryTaskCmd's verdict.
+type taskRetryMsg struct {
+	id       string
+	released []string
+	err      error
+}
+
+// retryTaskCmd re-queues a blocked task through the same app operation the
+// CLI and the web interface use, so all three behave identically.
+func retryTaskCmd(pr *app.Project, id string) tea.Cmd {
+	return func() tea.Msg {
+		released, err := pr.RetryTask(id)
+		return taskRetryMsg{id: id, released: released, err: err}
+	}
+}
+
+// firstBlockedTask lands the cursor on something worth looking at.
+func firstBlockedTask(tasks []*state.Task) int {
+	for i, t := range tasks {
+		if t.Status == state.TaskBlocked {
+			return i
+		}
+	}
+	return 0
+}
+
+func taskMarker(status string) string {
+	switch status {
+	case state.TaskDone:
+		return "✔"
+	case state.TaskActive:
+		return "▶"
+	case state.TaskBlocked:
+		return "✖"
+	default:
+		return "·"
+	}
+}
+
+func (m Model) tasksKey(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
+	st := m.proj.st
+	if st == nil || len(st.Tasks) == 0 {
+		return m, nil
+	}
+	switch key {
+	case "up", "k":
+		if m.proj.taskSel > 0 {
+			m.proj.taskSel--
+		}
+		m.proj.taskConfirm = ""
+	case "down", "j":
+		if m.proj.taskSel < len(st.Tasks)-1 {
+			m.proj.taskSel++
+		}
+		m.proj.taskConfirm = ""
+	case "u":
+		if m.proj.taskSel >= len(st.Tasks) {
+			return m, nil
+		}
+		t := st.Tasks[m.proj.taskSel]
+		if t.Status != state.TaskBlocked {
+			return m, sayStatus(t.ID+" is "+t.Status+" — re-queue applies to blocked tasks", true)
+		}
+		// Re-queueing resets an attempt counter: two presses, like delete.
+		if m.proj.taskConfirm != t.ID {
+			m.proj.taskConfirm = t.ID
+			return m, sayStatus(
+				"re-queue "+t.ID+"? press u again — attempts reset, dependents released, a finished project reopens", true)
+		}
+		m.proj.taskConfirm = ""
+		return m, retryTaskCmd(m.proj.pr, t.ID)
+	}
+	return m, nil
+}
+
+// viewTasks is the terminal half of "what actually went wrong": every task
+// with its status, and the selected task's recorded failure.
+func (m Model) viewTasks(w, pane int) string {
+	st := m.proj.st
+	if st == nil || len(st.Tasks) == 0 {
+		return clipBlock(mutedStyle.Render("  No tasks yet — planning creates them when the build starts."), pane)
+	}
+	if m.proj.taskSel >= len(st.Tasks) {
+		m.proj.taskSel = len(st.Tasks) - 1
+	}
+
+	done, blocked, total := st.Counts()
+	lines := []string{
+		titleStyle.Render(fmt.Sprintf("Tasks — %d/%d done", done, total)) +
+			func() string {
+				if blocked > 0 {
+					return warnStyle.Render(fmt.Sprintf("  %d blocked", blocked))
+				}
+				return ""
+			}(),
+		"",
+	}
+	for i, t := range st.Tasks {
+		if len(lines) >= pane-6 {
+			break
+		}
+		row := fmt.Sprintf("%s %-7s %-12s att=%d  %s", taskMarker(t.Status), t.ID, t.Status, t.Attempts, t.Title)
+		if i == m.proj.taskSel {
+			lines = append(lines, selectedItemStyle.Width(max(10, w-2)).Render(truncate("❯ "+row, w-3)))
+		} else {
+			lines = append(lines, "  "+truncate(row, w-3))
+		}
+	}
+
+	// Detail for the selection: the reason it stopped, verbatim.
+	if m.proj.taskSel >= len(st.Tasks) {
+		return clipBlock(strings.Join(lines, "\n"), pane)
+	}
+	t := st.Tasks[m.proj.taskSel]
+	detail := []string{"", sectionStyle.Render(t.ID + " · " + t.Title)}
+	if len(t.DependsOn) > 0 {
+		detail = append(detail, mutedStyle.Render("depends on "+strings.Join(t.DependsOn, ", ")))
+	}
+	if t.Commit != "" {
+		detail = append(detail, mutedStyle.Render("commit "+t.Commit))
+	}
+	if t.Status == state.TaskBlocked {
+		if len(t.Notes) > 0 {
+			detail = append(detail, badStyle.Render(truncate(t.Notes[len(t.Notes)-1], w-3)))
+		}
+		detail = append(detail, accentStyle.Render("press u twice to re-queue this task"))
+	} else if t.LastFeedback != "" {
+		detail = append(detail, mutedStyle.Render(truncate(t.LastFeedback, w-3)))
+	}
+	lines = append(lines, detail...)
+	return clipBlock(strings.Join(lines, "\n"), pane)
 }

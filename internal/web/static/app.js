@@ -2474,7 +2474,31 @@ function renderOverview() {
       renderOverview();
     })
   );
+  $$('[data-act="retry-task"]', body).forEach((b) =>
+    b.addEventListener("click", (ev) => {
+      ev.stopPropagation(); // keep the detail row from collapsing
+      retryTask(b.dataset.task);
+    })
+  );
   window.scrollTo(0, scrollY);
+}
+
+// retryTask re-queues a blocked task. Until now a blocked task was a dead
+// end: factory saved a patch, reset the tree, and no interface could put it
+// back in the queue.
+async function retryTask(id) {
+  try {
+    const res = await api(
+      `projects/${encodeURIComponent(S.route.id)}/tasks/${encodeURIComponent(id)}/retry`,
+      { method: "POST", body: {} }
+    );
+    const released = res.released && res.released.length ? ` · released ${res.released.join(", ")}` : "";
+    toast(`${id} re-queued${released}`, false);
+    await refresh();
+    toast("Press Start build to run it again", false);
+  } catch (e) {
+    toast(e.message, true);
+  }
 }
 
 function taskRow(t) {
@@ -2490,6 +2514,8 @@ function taskRow(t) {
       ${t.brief ? `<h3>Design brief (roundtable)</h3>${md(t.brief)}` : ""}
       ${t.last_feedback ? `<h3>Feedback for the next attempt</h3>${md(t.last_feedback)}` : ""}
       ${t.notes && t.notes.length ? `<h3>Notes</h3><ul>${t.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
+      ${t.status === "blocked" ? `<p><button class="btn primary small" type="button" data-act="retry-task" data-task="${esc(t.id)}">↻ Re-queue ${esc(t.id)}</button>
+        <span class="muted">resets its attempts, releases anything blocked behind it, and reopens a finished project — then press Start build.</span></p>` : ""}
       <p><a href="#/p/${encodeURIComponent(S.route.id)}/artifacts">Briefs, builder summaries, test logs and reviews →</a></p>
     </td></tr>`;
   }
