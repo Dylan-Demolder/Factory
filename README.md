@@ -291,7 +291,7 @@ Run `pip install camel-ai "mcp<2"`, and export the variable named by `CAMEL_API_
 
 The `"mcp<2"` pin matters: camel-ai declares `mcp>=1.3.0` with no upper bound, and mcp 2.x removed `FastMCP`, so an unpinned install resolves a combination that fails on import.
 
-**The bridge is a tool-using agent, not just a chat.** `FACTORY_READONLY=true` (reviewers, interviewers, roundtable seats) offers it read/grep/list only, so it cannot touch files; as the builder it additionally gets `write_file` and `replace_in_file`. Every path is resolved inside the project directory and rejected if it escapes. Without those tools a camel agent could only *talk* about building — factory expects changed files behind it.
+**The bridge is a tool-using agent, not just a chat.** `FACTORY_READONLY=true` (reviewers, interviewers, roundtable seats) offers it read/grep/list only, so it cannot touch files — and cannot execute anything either. As the builder it additionally gets `write_file`, `replace_in_file`, `make_executable`, `delete_file` and `run_command`: the last is what lets a builder run the suite itself instead of submitting blind, and lets the acceptance trial actually use the software hands-on. Every path resolves inside the project directory and is rejected if it escapes; `run_command` runs with the project as its working directory under a hard timeout.
 
 The installed copy is `~/.config/factory/adapters/camel_agent.py`; an upgraded binary writes the new version only on `factory init --force`, which **also overwrites `factory.json`** — so after upgrading, copy the embedded adapter across instead:
 
