@@ -26,12 +26,27 @@ import (
 func (e *Engine) Roundtable(ctx context.Context, slug, topic, material, moderator, synthesis string) (string, error) {
 	parts := e.Cfg.Roundtable.Participants
 	rounds := e.Cfg.Roundtable.Rounds
+
+	// Seats fan out in parallel. A cap keeps that fan-out inside whatever the
+	// provider actually allows concurrently — without it, a panel larger than
+	// the caller's stream allowance queues against itself (or gets throttled)
+	// purely because factory asked everyone the same question at once.
+	var sem chan struct{}
+	capped := false
+	if limit := e.Cfg.Limits.MaxParallelParticipants; limit > 0 && limit < len(parts) {
+		sem = make(chan struct{}, limit)
+		capped = true
+	}
 	var log strings.Builder
 	fmt.Fprintf(&log, "# Roundtable: %s\n\n_%s_\n\n## Topic\n%s\n\n", slug, time.Now().Format(time.RFC1123), topic)
 
 	latest := make([]string, len(parts))
 	if len(parts) > 0 {
-		e.logf("  roundtable %q: %d participants, %d rounds", slug, len(parts), rounds)
+		if capped {
+			e.logf("  roundtable %q: %d participants, %d rounds, %d at a time", slug, len(parts), rounds, cap(sem))
+		} else {
+			e.logf("  roundtable %q: %d participants, %d rounds", slug, len(parts), rounds)
+		}
 	}
 	for r := 1; r <= rounds && len(parts) > 0; r++ {
 		prev := append([]string(nil), latest...)
@@ -42,6 +57,10 @@ func (e *Engine) Roundtable(ctx context.Context, slug, topic, material, moderato
 			wg.Add(1)
 			go func(i int, pt config.Participant) {
 				defer wg.Done()
+				if sem != nil {
+					sem <- struct{}{}
+					defer func() { <-sem }()
+				}
 				prompt := participantPrompt(pt, i, parts, topic, material, r, prev)
 				out, err := e.call(ctx, pt.Agent, agent.Request{
 					Stage:    "roundtable-" + slug,

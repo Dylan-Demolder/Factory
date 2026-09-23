@@ -72,12 +72,27 @@ type Task struct {
 	DependsOn   []string `json:"depends_on"`
 	UseCases    []string `json:"use_cases"`
 
-	Status       string   `json:"status"`
-	Attempts     int      `json:"attempts"`
+	Status   string `json:"status"`
+	Attempts int    `json:"attempts"`
+	// Failures records one entry per failed attempt, reduced to a signature
+	// that is comparable across attempts. Without it a builder that fixes a
+	// compile error in attempt 2 and reintroduces it in attempt 3 looks like
+	// two unrelated failures rather than the same mistake twice.
+	Failures []Failure `json:"failures,omitempty"`
+	// Rebriefs counts design roundtables re-run because a failure repeated:
+	// a mistake that survives two attempts is evidence the brief itself is
+	// wrong, so it gets corrected once rather than retried into a block.
+	Rebriefs     int      `json:"rebriefs,omitempty"`
 	Brief        string   `json:"brief,omitempty"`
 	LastFeedback string   `json:"last_feedback,omitempty"`
 	Notes        []string `json:"notes,omitempty"`
 	Commit       string   `json:"commit,omitempty"`
+}
+
+// Failure is one failed attempt reduced to something comparable.
+type Failure struct {
+	Attempt int    `json:"attempt"`
+	Sig     string `json:"sig"`
 }
 
 type Project struct {
