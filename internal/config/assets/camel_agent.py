@@ -193,6 +193,30 @@ def replace_in_file(path: str, old: str, new: str) -> str:
     return f"replaced 1 occurrence in {path}"
 
 
+def delete_file(path: str) -> str:
+    """Remove a file from the project (files only, never a directory).
+
+    Briefs ask for deletions — folding a task-scoped file into a permanent
+    one, or dropping a scaffold — and without this the only way to comply
+    was to ask the human. Paths stay inside the project like every other
+    tool, and .factory/ is refused outright: factory owns that directory.
+    """
+    try:
+        target = _resolve(path)
+        if not os.path.exists(target):
+            return f"error: {path} does not exist"
+        if os.path.isdir(target):
+            return f"error: {path} is a directory — only files can be deleted"
+        if os.path.realpath(target).startswith(
+            os.path.realpath(os.path.join(os.getcwd(), ".factory")) + os.sep
+        ):
+            return "error: refusing to touch .factory/ — factory owns it"
+        os.remove(target)
+    except Exception as exc:  # noqa: BLE001
+        return f"error: {exc}"
+    return f"deleted {path}"
+
+
 def make_executable(path: str) -> str:
     """Set the executable bit on a project file (chmod +x).
 
@@ -215,7 +239,7 @@ def make_executable(path: str) -> str:
 # are only ever offered read tools, so editing is not something the model can
 # even attempt.
 READ_TOOLS = (read_file, list_files, grep_files)
-WRITE_TOOLS = (write_file, replace_in_file, make_executable)
+WRITE_TOOLS = (write_file, replace_in_file, make_executable, delete_file)
 
 BUILDER_RULES = (
     "\n\nYou are the builder for this project. Work inside the project "
