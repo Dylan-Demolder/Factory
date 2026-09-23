@@ -227,8 +227,9 @@ func TestFullPipeline(t *testing.T) {
 
 	e, d := newEngine(t, cfg, thinker, critic, builder)
 	dir = d
-	// Answers: Q1, Q2 (no preference), then change request, then approve.
-	e.UI = ui.New(strings.NewReader("Busy developers\n\n\nBe more polite\n\ny\n"), io.Discard)
+	// Answers: the round is asked as one batch (one line each — Q1, Q2
+	// blank = no preference), then the change request, then approve.
+	e.UI = ui.New(strings.NewReader("Busy developers\n\nBe more polite\n\ny\n"), io.Discard)
 
 	ctx := context.Background()
 	if err := e.Spec(ctx); err != nil {

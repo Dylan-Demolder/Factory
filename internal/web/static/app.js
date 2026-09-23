@@ -2503,12 +2503,80 @@ function renderChat() {
     <div id="chat-banner" class="chat-banner" hidden></div>
     <div id="chat-log" class="chat-log"></div>
     <div id="chat-typing" class="typing" hidden>agents are working</div>
-    <form id="composer" class="composer">
-      <textarea id="chat-input" rows="2" placeholder="Type your answer…  (Ctrl/⌘+Enter to send)"></textarea>
-      <button id="chat-send" class="btn primary" type="submit">Send</button>
-    </form></div>`;
+    <form id="composer" class="composer"></form></div>`;
   S.chat.after = 0;
+  renderComposer([]);
+  pollChat();
+}
+
+// pendingQuestions finds the trailing run of batch questions — the ones the
+// interview posted together and has not been answered yet. They carry an
+// "[i/n]" prefix, which is how a single approval question (no prefix) stays
+// on the one-line path.
+function pendingQuestions(log) {
+  const out = [];
+  for (let i = log.children.length - 1; i >= 0; i--) {
+    const el = log.children[i];
+    if (!el.classList.contains("msg")) continue;
+    if (el.classList.contains("user")) break;
+    if (el.classList.contains("agent") && /^\[\d+\/\d+\]/.test(el.textContent)) {
+      out.unshift(el.textContent);
+      continue;
+    }
+    break;
+  }
+  return out;
+}
+
+// renderComposer swaps between the one-line answer and the batch form. It
+// rebuilds only when the shape changes, so typed text is never thrown away
+// while the interview is still waiting.
+function renderComposer(questions) {
+  const form = $("#composer");
+  if (!form) return;
+  const batch = questions.length > 1;
+  const key = batch ? `batch:${questions.length}` : "single";
+  if (form.dataset.key === key) return;
+  form.dataset.key = key;
+  if (batch) {
+    form.innerHTML =
+      questions.map((q, i) =>
+        `<label class="q-label" for="ans-${i}">${esc(q)}</label>` +
+        `<textarea class="ans" id="ans-${i}" rows="1" data-i="${i}"></textarea>`
+      ).join("") +
+      `<div class="composer-actions">
+         <button id="chat-send" class="btn primary" type="submit">Send answers</button>
+         <button id="chat-skip" class="btn small" type="button">Skip to the spec</button>
+         <span class="muted">one answer per question · blank = no preference</span>
+       </div>`;
+  } else {
+    form.innerHTML = `<textarea id="chat-input" rows="2" placeholder="Type your answer…  (Ctrl/⌘+Enter to send)"></textarea>
+      <button id="chat-send" class="btn primary" type="submit">Send</button>`;
+  }
+  wireComposer(batch);
+}
+
+function wireComposer(batch) {
+  const form = $("#composer");
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    if (batch) {
+      await sendAnswers($$("textarea.ans", form).map((t) => t.value));
+    } else {
+      await sendAnswer($("#chat-input").value);
+    }
+  };
+  const skip = $("#chat-skip");
+  if (skip) {
+    skip.onclick = async () => {
+      const n = $$("textarea.ans", form).length;
+      if (!n) return;
+      // /done in the first slot: the interview stops there.
+      await sendAnswers(["/done", ...Array(Math.max(0, n - 1)).fill("")]);
+    };
+  }
   const input = $("#chat-input");
+  if (!input) return;
   const autosize = () => {
     input.style.height = "auto";
     input.style.height = Math.min(200, input.scrollHeight) + "px";
@@ -2518,27 +2586,53 @@ function renderChat() {
   input.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) {
       ev.preventDefault();
-      $("#composer").requestSubmit();
+      form.requestSubmit();
     }
   });
-  $("#composer").addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    await sendAnswer(input.value);
-  });
   autosize();
-  pollChat();
+}
+
+// quickReply routes a one-click shortcut through whichever composer is open:
+// in a batch the shortcut becomes the first slot (the interview stops there).
+function quickReply(value) {
+  const form = $("#composer");
+  if (form && (form.dataset.key || "").startsWith("batch")) {
+    const n = $$("textarea.ans", form).length;
+    sendAnswers([value, ...Array(Math.max(0, n - 1)).fill("")]);
+    return;
+  }
+  sendAnswer(value);
 }
 
 async function sendAnswer(text) {
   const input = $("#chat-input");
-  $("#chat-send").disabled = true;
+  const btn = $("#chat-send");
+  if (btn) btn.disabled = true;
   try {
     await api(`projects/${encodeURIComponent(S.route.id)}/chat`, { method: "POST", body: { text } });
     if (input) input.value = "";
     S.chat.waiting = false;
-    $("#chat-send").textContent = "Send (no preference)";
+    if (btn && input) btn.textContent = "Send (no preference)";
   } catch (e) {
     toast(e.message, true);
+  }
+  await pollChat();
+}
+
+// sendAnswers submits the whole interview round in one request — the reason
+// an eight-question round now costs one interaction instead of eight.
+async function sendAnswers(answers) {
+  const btn = $("#chat-send");
+  if (btn) btn.disabled = true;
+  try {
+    await api(`projects/${encodeURIComponent(S.route.id)}/chat`, { method: "POST", body: { answers } });
+    S.chat.waiting = false;
+    S.chat.pending = 0;
+    renderComposer([]); // batch → single; rebuilds and wires itself once
+  } catch (e) {
+    toast(e.message, true);
+    if (btn) btn.disabled = false;
+    return;
   }
   await pollChat();
 }
@@ -2569,7 +2663,7 @@ async function pollChat() {
         btn.className = "btn small" + (b.value === "y" ? " primary" : "");
         btn.type = "button";
         btn.textContent = b.label;
-        btn.addEventListener("click", () => sendAnswer(b.value));
+        btn.addEventListener("click", () => quickReply(b.value));
         q.appendChild(btn);
       }
       div.appendChild(q);
@@ -2583,8 +2677,17 @@ async function pollChat() {
   S.chat.waiting = res.waiting;
   S.chat.active = res.active;
   S.chat.exists = res.exists;
-  $("#chat-send").disabled = !res.waiting;
-  $("#chat-input").disabled = !res.waiting;
+  S.chat.pending = res.pending || 0;
+
+  // Move the composer between the one-line answer and the batch form as the
+  // interview switches between a single question and a round of them.
+  if (res.waiting && S.chat.pending > 1) renderComposer(pendingQuestions(log));
+  else renderComposer([]);
+
+  const sendBtn = $("#chat-send");
+  if (sendBtn) sendBtn.disabled = !res.waiting;
+  const oneInput = $("#chat-input");
+  if (oneInput) oneInput.disabled = !res.waiting;
   $("#chat-typing").hidden = !(res.active && !res.waiting);
 
   const banner = $("#chat-banner");
@@ -2609,7 +2712,13 @@ async function pollChat() {
     }
   }
   if (res.messages.length && (nearBottom || S.chat.after === res.messages[res.messages.length - 1].id)) log.scrollTop = log.scrollHeight;
-  if (res.waiting && document.activeElement !== $("#chat-input") && window.innerWidth > 860) $("#chat-input").focus();
+  if (res.waiting && window.innerWidth > 860) {
+    // Focus whatever the composer currently offers — the single input, or the
+    // first field of a batch — but never steal focus while the user types.
+    const target = $("#chat-input") || $("textarea.ans", $("#composer"));
+    const ae = document.activeElement;
+    if (target && (!ae || ae === document.body)) target.focus();
+  }
 }
 
 // ---------- live log ----------
