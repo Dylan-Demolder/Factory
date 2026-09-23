@@ -575,6 +575,8 @@ factory status [dir]                      phase, tasks, use-case verdicts, recen
 factory logs [dir]                        print .factory/run.log
 factory stop [dir]                        stop a background build (resume with run)
 factory rm <name> [--yes]                 delete a project — confirms first (unless --yes), stops a running build, then removes the directory
+factory tasks [dir]                       list tasks with status, attempts, and the failure that stopped a blocked one
+factory retry <dir> <TASK>                re-queue a blocked task: resets attempts, releases dependents, reopens a finished project
 factory serve [flags]                     web interface
     --addr HOST:PORT        default 127.0.0.1:7700            ($FACTORY_ADDR)
     --workspace DIR         default ~/factory-projects        ($FACTORY_WORKSPACE)
@@ -610,6 +612,7 @@ All endpoints are under `<base-path>/api/`, take and return JSON, and require au
 | `POST /projects/{id}/run` | | `{pid}`, starts a background build |
 | `POST /projects/{id}/stop` | | Stops it |
 | `DELETE /projects/{id}` | `?force=true` | Deletes the project, its files and git history. **409** while a build is running unless `force=true` (stops it first); cancels a live interview; 404 unknown, 400 bad name |
+| `POST /projects/{id}/tasks/{task}/retry` | | Re-queues a blocked task, returns `{released:[…]}` for dependents it unblocked and reopens a finished project's phase. **404** unknown task; **409** running build / not blocked / already done |
 | `GET /projects/{id}/log` | `?offset=N` (`-1` = last 64 KB) | `{text, offset, size}`. Pass the returned `offset` next time |
 | `GET /projects/{id}/artifacts` | | `{artifacts: [{path, group, size, modified}]}` |
 | `GET /projects/{id}/artifact` | `?path=…` (from the list) | `{path, content, truncated}` |
@@ -757,6 +760,7 @@ To go faster and cheaper, set `rounds: 1`, `on_tasks: false`, or a smaller panel
 |---|---|
 | `doctor` shows an agent failing | Run its command by hand. Check `PATH`, API keys and `CAMEL_*` settings |
 | A roundtable seat sits idle for minutes | Watch the seat's process: if its CPU time isn't advancing it is blocked on the network. `agent_timeout` (30m) would kill it and `agent_retries` would try again — each attempt costs the full timeout. Killing the stuck process yourself unblocks it immediately: factory records the error and retries straight away (`.factory/events.jsonl`). |
+| A task is **blocked** after max attempts | `factory tasks` shows the exact failure, then `factory retry <dir> <TASK>` re-queues it (attempts reset, dependents released, a finished project reopens) — after which you start the build again. Same action in the UI (*Re-queue* inside the expanded task) and in the TUI (Tasks tab, `u` twice). |
 | camel agents error with rate/queue limits | A camelStream subscription allows a fixed number of **concurrent** streams (2 on the small plan). Roundtable participants run *in parallel*, so keep the number of camel seats on the panel at or below that allowance. |
 | Build runs but opencode never edits files | Check `opencode.json` permissions in the project. Try `opencode run "create hello.txt"` there |
 | Every task fails "tests failed" | Look at `.factory/tasks/T1-attempt-*-tests.log`. Set `test_command` in the config if the planner guessed wrong |

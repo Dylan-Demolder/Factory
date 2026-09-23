@@ -125,6 +125,7 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/projects", s.handleCreate)
 	api("GET /api/projects/{id}", s.handleProject)
 	api("DELETE /api/projects/{id}", s.handleDelete)
+	api("POST /api/projects/{id}/tasks/{task}/retry", s.handleTaskRetry)
 	api("POST /api/projects/{id}/spec", s.handleSpecStart)
 	api("DELETE /api/projects/{id}/spec", s.handleSpecStop)
 	api("GET /api/projects/{id}/chat", s.handleChat)
@@ -675,6 +676,36 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]bool{"ok": true})
+}
+
+// handleTaskRetry puts a blocked task — and anything blocked behind it — back
+// in the queue. It is the way out of factory's "gave up after N attempts",
+// which otherwise required editing state.json by hand.
+func (s *Server) handleTaskRetry(w http.ResponseWriter, r *http.Request) {
+	id, pr, ok := s.open(w, r)
+	if !ok {
+		return
+	}
+	task := r.PathValue("task")
+	released, err := pr.RetryTask(task)
+	if err != nil {
+		switch {
+		case errors.Is(err, app.ErrNoSuchTask):
+			writeErr(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, app.ErrBuildRunning),
+			errors.Is(err, app.ErrAlreadyDone),
+			errors.Is(err, app.ErrNotBlocked):
+			writeErr(w, http.StatusConflict, err.Error())
+		default:
+			writeErr(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	sum, _ := app.Summarize(id, pr.Store.Root)
+	writeJSON(w, map[string]any{
+		"ok": true, "id": id, "task": task,
+		"released": released, "summary": sum,
+	})
 }
 
 const (
