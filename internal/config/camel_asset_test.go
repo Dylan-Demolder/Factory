@@ -110,3 +110,27 @@ func TestEmbeddedCamelAdapterCanDeleteFiles(t *testing.T) {
 		t.Error("delete_file leaked into READ_TOOLS — reviewers could delete files")
 	}
 }
+
+// The build prompt tells builders to run the suite themselves, and the
+// acceptance trial has them use the software hands-on. Without a command
+// tool a camel builder could do neither — wordcnt's round-3 trial came back
+// "No command executed" for all nine use cases.
+func TestEmbeddedCamelAdapterCanRunCommands(t *testing.T) {
+	for _, needle := range []string{"def run_command", "subprocess.run"} {
+		if !strings.Contains(CamelAdapter, needle) {
+			t.Errorf("adapter missing %q", needle)
+		}
+	}
+	i := strings.Index(CamelAdapter, "WRITE_TOOLS =")
+	if i < 0 || !strings.Contains(CamelAdapter[i:i+200], "run_command") {
+		t.Error("run_command missing from WRITE_TOOLS — builders cannot verify their own work")
+	}
+	r := strings.Index(CamelAdapter, "READ_TOOLS =")
+	if r >= 0 && strings.Contains(CamelAdapter[r:i], "run_command") {
+		t.Error("run_command leaked into READ_TOOLS — reviewers could execute commands")
+	}
+	// A hard timeout must be part of it: a hung command cannot wedge a build.
+	if !strings.Contains(CamelAdapter, "command timed out") {
+		t.Error("run_command has no timeout handling")
+	}
+}

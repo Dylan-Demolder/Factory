@@ -18,10 +18,11 @@ factory also sets, per call:
                      "false" for the builder. This decides which tools the
                      agent is offered — a reviewer gets read tools only, a
                      builder additionally gets the ability to create and
-                     edit files inside the project directory, and to set the
-                     executable bit (write_file always makes 0644, so a task
-                     requiring an executable script was otherwise impossible
-                     to satisfy).
+                     edit files inside the project directory, to set the
+                     executable bit (write_file always makes 0644), and to
+                     run commands — tests, the built binary, the acceptance
+                     trial — which is how a builder verifies its own work
+                     instead of submitting blind.
 
 Without tools this bridge could only ever *talk* about building; factory
 expects a builder to leave changed files behind, so the tool set is what
@@ -35,6 +36,7 @@ import fnmatch
 import logging
 import os
 import re
+import subprocess
 import sys
 
 # Bound the work a single tool call can do, so a wild pattern cannot turn a
@@ -193,6 +195,45 @@ def replace_in_file(path: str, old: str, new: str) -> str:
     return f"replaced 1 occurrence in {path}"
 
 
+def run_command(command: str, timeout_seconds: int = 60) -> str:
+    """Run a shell command in the project directory; returns exit code and output.
+
+    This is what lets a builder verify its own work: the build prompt tells it
+    to run the test suite and keep going until it is green, and without this
+    tool it could only submit blind and wait for factory to run the tests for
+    it. It is also what makes the acceptance trial's hands-on trial possible —
+    a reviewer asking "did you actually run it?" could not be answered.
+
+    Runs with the project as its working directory, a hard timeout so a hung
+    command cannot wedge the build, and truncated output. It is deliberately
+    only offered to builders: a seat that must not modify files certainly
+    must not execute anything either.
+    """
+    try:
+        limit = max(1, min(int(timeout_seconds or 60), 120))
+        proc = subprocess.run(
+            ["sh", "-c", command],
+            cwd=os.getcwd(),
+            capture_output=True,
+            text=True,
+            timeout=limit,
+        )
+    except subprocess.TimeoutExpired:
+        return f"error: command timed out after {limit}s: {command}"
+    except Exception as exc:  # noqa: BLE001
+        return f"error: {exc}"
+
+    parts = []
+    if proc.stdout:
+        parts.append(proc.stdout)
+    if proc.stderr:
+        parts.append("--- stderr ---\n" + proc.stderr)
+    out = "".join(parts)
+    if len(out) > 8000:
+        out = out[:8000] + f"\n…[truncated at 8000 chars]"
+    return f"exit code {proc.returncode}\n{out}".rstrip()
+
+
 def delete_file(path: str) -> str:
     """Remove a file from the project (files only, never a directory).
 
@@ -239,7 +280,8 @@ def make_executable(path: str) -> str:
 # are only ever offered read tools, so editing is not something the model can
 # even attempt.
 READ_TOOLS = (read_file, list_files, grep_files)
-WRITE_TOOLS = (write_file, replace_in_file, make_executable, delete_file)
+WRITE_TOOLS = (write_file, replace_in_file, make_executable, delete_file,
+              run_command)
 
 BUILDER_RULES = (
     "\n\nYou are the builder for this project. Work inside the project "
