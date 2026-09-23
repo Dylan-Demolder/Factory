@@ -45,6 +45,8 @@ Usage:
   factory logs [dir]                   print the run log
   factory stop [dir]                   stop a detached run (resume later with run)
   factory rm <name> [--yes]            delete a project (confirms first; stops its build)
+  factory tasks [dir]                  list tasks: status, attempts, and why one is blocked
+  factory retry <dir> <TASK>           re-queue a blocked task (releases dependents, reopens a finished project)
   factory serve [flags]                web interface for creating, speccing and controlling projects
       --addr HOST:PORT  listen address (default 127.0.0.1:7700)
       --workspace DIR   where projects live (default ~/factory-projects)
@@ -102,6 +104,10 @@ func main() {
 		err = cmdStop(args)
 	case "rm":
 		err = cmdRm(args)
+	case "tasks":
+		err = cmdTasks(args)
+	case "retry":
+		err = cmdRetry(args)
 	case "serve":
 		err = cmdServe(ctx, args)
 	case "tui":
@@ -462,6 +468,85 @@ func cmdStop(args []string) error {
 		return err
 	}
 	fmt.Printf("Sent stop to pid %d; progress is saved. Resume with: factory run %s --detach\n", pid, dir)
+	return nil
+}
+
+// cmdTasks lists a project's tasks — with, for a blocked one, the failure
+// that stopped it. Knowing what went wrong is the other half of fixing it.
+func cmdTasks(args []string) error {
+	fs := flag.NewFlagSet("tasks", flag.ExitOnError)
+	pos, err := parse(fs, args)
+	if err != nil {
+		return err
+	}
+	dir, err := projectDir(pos)
+	if err != nil {
+		return err
+	}
+	pr, err := app.Open(dir, "")
+	if err != nil {
+		return err
+	}
+	done, blocked, total := pr.P.Counts()
+	fmt.Printf("%s — phase %s, %d/%d done", pr.P.Name, pr.P.Phase, done, total)
+	if blocked > 0 {
+		fmt.Printf(", %d blocked", blocked)
+	}
+	if running, alive := pr.Running(); alive {
+		fmt.Printf(", build running (pid %d)", running)
+	}
+	fmt.Println()
+
+	mark := map[string]string{
+		state.TaskDone: "✔", state.TaskActive: "▶",
+		state.TaskBlocked: "✖", state.TaskPending: "·",
+	}
+	for _, t := range pr.P.Tasks {
+		fmt.Printf("  %s %-8s %-12s att=%d  %s\n",
+			mark[t.Status], t.ID, t.Status, t.Attempts, t.Title)
+		if t.Status == state.TaskBlocked && len(t.Notes) > 0 {
+			last := t.Notes[len(t.Notes)-1]
+			fmt.Printf("      ↳ %s\n", trunc(last, 160))
+		}
+	}
+	if blocked > 0 {
+		fmt.Printf("\nre-queue one:   factory retry %s <TASK>\n", dir)
+	}
+	return nil
+}
+
+// cmdRetry puts a blocked task back in the queue.
+func cmdRetry(args []string) error {
+	fs := flag.NewFlagSet("retry", flag.ExitOnError)
+	pos, err := parse(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 2 {
+		return errors.New("usage: factory retry <dir|name> <TASK>\n       run `factory tasks` to see the task ids")
+	}
+	dir, err := projectDir(pos[:1])
+	if err != nil {
+		return err
+	}
+	pr, err := app.Open(dir, "")
+	if err != nil {
+		return err
+	}
+	released, err := pr.RetryTask(pos[1])
+	if err != nil {
+		if errors.Is(err, app.ErrBuildRunning) {
+			return fmt.Errorf("%w\nstop it first: factory stop %s", err, dir)
+		}
+		return err
+	}
+	done, _, total := pr.P.Counts()
+	fmt.Printf("requeued %s — phase %s, %d/%d done", pos[1], pr.P.Phase, done, total)
+	if len(released) > 0 {
+		fmt.Printf(", released: %s", strings.Join(released, ", "))
+	}
+	fmt.Println()
+	fmt.Printf("start the build:  factory run %s --detach\n", dir)
 	return nil
 }
 
