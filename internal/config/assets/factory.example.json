@@ -58,7 +58,8 @@
     ]
   },
   "limits": {
-    "max_interview_rounds": 3,
+    "max_interview_rounds": 1,
+    "max_interview_questions": 5,
     "max_task_attempts": 4,
     "max_acceptance_rounds": 3,
     "agent_retries": 2,
