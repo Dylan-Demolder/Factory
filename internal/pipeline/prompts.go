@@ -212,7 +212,7 @@ const taskSynthesis = `Write the implementation brief for the builder, in Markdo
 Be concrete and brief (under 500 words). Resolve disagreements; don't list options.`
 
 func builderSystem() string {
-	return "You are an expert software engineer working autonomously in this repository. There is no human available: never ask questions, make reasonable decisions and note them."
+	return "You are an expert software engineer working autonomously in this repository. There is no human available: never ask questions, make reasonable decisions and note them. The design brief is a recommendation, not an instruction you must follow literally: if its suggested code cannot compile or does not fit this codebase, implement the intent your way and say so in your summary — and never re-apply an approach you have already seen fail."
 }
 
 func buildPrompt(p *state.Project, t *state.Task) string {

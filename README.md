@@ -162,6 +162,8 @@ Some details that matter:
 - **When tests fail, the reviewer isn't called at all.** It would cost agent calls for no benefit. The failing output goes straight back to the builder.
 - **Readiness respects `depends_on`.** If a dependency is blocked, the tasks that depend on it are blocked too. If the planner creates a dependency cycle, factory runs the first pending task anyway rather than deadlocking.
 - **Every attempt is recorded**: `.factory/tasks/T3-attempt-2-builder.md`, `-tests.log` and `-review.md`, plus `T3-brief.md` and, if the task was blocked, `T3-unfinished.patch`.
+- **A repeated failure reopens the design.** Each failed attempt is reduced to a normalised signature (line numbers and timings stripped), so the same mistake twice is recognisable. On a repeat the builder is told exactly which attempts share it — a regression is different from something new — and if it happens **twice** the design roundtable is re-run with the failure history instead of spending the remaining attempts on the same instruction (bounded to one re-brief per task; transcript `NNN-task-<id>-rebrief.md`, new brief `tasks/<id>-brief-re1.md`). The brief itself is advisory: the builder is told to implement the intent its own way and say so when its suggested code cannot compile.
+- **Stalled calls cost real time.** A seat blocked on the network burns `agent_timeout` per attempt, and `agent_retries` multiplies that — 30m × 3 is a 90-minute stall for one opinion. Give panel seats a short per-agent `timeout` when their provider is fast.
 
 ### Roundtables
 
@@ -172,6 +174,8 @@ A roundtable is a structured multi-agent discussion. Each seat is an agent with 
 | 1 | opencode | Pragmatic senior engineer who can read the repository |
 | 2 | camel-a | Product owner and end-user advocate who cares about genuine use cases and scope |
 | 3 | camel-b | QA and test lead who cares about testability, edge cases, failure modes and security |
+
+Seats run **in parallel**, so a panel larger than your provider's concurrent allowance ends up queueing against its own limit — a two-stream camelStream plan cannot serve three simultaneous requests. Set `limits.max_parallel_participants` (this installation uses `2`, matching its plan) and factory runs that many at a time instead; `0`, the default, means all at once.
 
 ```mermaid
 flowchart LR
@@ -662,7 +666,9 @@ curl -s -H "Authorization: Bearer $T" -H 'Content-Type: application/json' -d '{"
     "max_acceptance_rounds": 3,
     "agent_retries": 2,                  // retries on agent errors (with backoff)
     "agent_timeout": "30m",
-    "test_timeout": "15m"
+    "test_timeout": "15m",
+    "max_parallel_participants": 2       // seats run in parallel; cap them to your
+                                         // provider's concurrent limit (0 = all at once)
   },
   "test_command": "",                    // override the planner's test command
   "notify_command": ""                   // shell command run on complete / finished-with-issues / blocked / error
