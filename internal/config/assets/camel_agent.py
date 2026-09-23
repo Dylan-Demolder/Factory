@@ -18,7 +18,10 @@ factory also sets, per call:
                      "false" for the builder. This decides which tools the
                      agent is offered — a reviewer gets read tools only, a
                      builder additionally gets the ability to create and
-                     edit files inside the project directory.
+                     edit files inside the project directory, and to set the
+                     executable bit (write_file always makes 0644, so a task
+                     requiring an executable script was otherwise impossible
+                     to satisfy).
 
 Without tools this bridge could only ever *talk* about building; factory
 expects a builder to leave changed files behind, so the tool set is what
@@ -190,11 +193,29 @@ def replace_in_file(path: str, old: str, new: str) -> str:
     return f"replaced 1 occurrence in {path}"
 
 
+def make_executable(path: str) -> str:
+    """Set the executable bit on a project file (chmod +x).
+
+    Without this a builder can never satisfy a criterion that asks for an
+    executable script: write_file always creates 0644 and there was no way to
+    change the mode — wordcnt's reviewer rejected a task four times over
+    exactly that.
+    """
+    try:
+        target = _resolve(path)
+        if not os.path.exists(target):
+            return f"error: {path} does not exist yet — create it first"
+        os.chmod(target, os.stat(target).st_mode | 0o111)
+    except Exception as exc:  # noqa: BLE001
+        return f"error: {exc}"
+    return f"{path} is now executable"
+
+
 # Reviewers, interviewers and roundtable seats must not touch files — they
 # are only ever offered read tools, so editing is not something the model can
 # even attempt.
 READ_TOOLS = (read_file, list_files, grep_files)
-WRITE_TOOLS = (write_file, replace_in_file)
+WRITE_TOOLS = (write_file, replace_in_file, make_executable)
 
 BUILDER_RULES = (
     "\n\nYou are the builder for this project. Work inside the project "
