@@ -91,3 +91,22 @@ func TestEmbeddedCamelAdapterCanMarkExecutable(t *testing.T) {
 		t.Error("make_executable leaked into READ_TOOLS — reviewers could chmod files")
 	}
 }
+
+// Briefs ask for deletions — "fold run_t3_test.go into run_test.go and
+// delete that task-scoped file" was wordcnt's T4, rejected four times with
+// no way to comply.
+func TestEmbeddedCamelAdapterCanDeleteFiles(t *testing.T) {
+	for _, needle := range []string{"def delete_file", ".factory/ — factory owns it"} {
+		if !strings.Contains(CamelAdapter, needle) {
+			t.Errorf("adapter missing %q", needle)
+		}
+	}
+	i := strings.Index(CamelAdapter, "WRITE_TOOLS =")
+	if i < 0 || !strings.Contains(CamelAdapter[i:], "delete_file") {
+		t.Error("delete_file is missing from WRITE_TOOLS — builders cannot delete")
+	}
+	r := strings.Index(CamelAdapter, "READ_TOOLS =")
+	if r >= 0 && strings.Contains(CamelAdapter[r:i], "delete_file") {
+		t.Error("delete_file leaked into READ_TOOLS — reviewers could delete files")
+	}
+}
