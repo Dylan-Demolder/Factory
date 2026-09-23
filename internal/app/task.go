@@ -69,10 +69,12 @@ func (pr *Project) RetryTask(id string) (released []string, err error) {
 		released = append(released, other.ID)
 	}
 
-	if pr.P.Phase == state.PhaseDone || pr.P.Phase == state.PhaseAccepting {
-		pr.P.Phase = state.PhaseBuilding
-		pr.P.Outcome = ""
-	}
+	// Reopening the phase is not enough: the tasks were fixed *because*
+	// acceptance found gaps, so acceptance has to get to judge them again.
+	// Bounded — each build pass still stops at max_acceptance_rounds.
+	pr.P.Phase = state.PhaseBuilding
+	pr.P.Outcome = ""
+	pr.P.AcceptanceRound = 0
 	if err := pr.Store.Save(pr.P); err != nil {
 		return nil, fmt.Errorf("could not save the project: %w", err)
 	}

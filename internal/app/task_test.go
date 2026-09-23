@@ -84,8 +84,12 @@ func TestRetryBlockedTaskReopensTheProject(t *testing.T) {
 	if pr.P.Outcome != "" {
 		t.Errorf("outcome = %q, want cleared", pr.P.Outcome)
 	}
-	if pr.P.AcceptanceRound != 2 {
-		t.Errorf("acceptance round = %d — it should be kept, not replayed", pr.P.AcceptanceRound)
+	// And acceptance must get to judge again: the tasks were fixed because
+	// acceptance found gaps, so a kept counter would send the project
+	// straight past the rounds that would prove the fix. Each build pass is
+	// still bounded by max_acceptance_rounds.
+	if pr.P.AcceptanceRound != 0 {
+		t.Errorf("acceptance round = %d, want reset to 0 so the fix is re-judged", pr.P.AcceptanceRound)
 	}
 
 	// And it must be on disk, not only in memory.
