@@ -133,7 +133,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	}
 }
 
-const version = "0.2.0"
+const version = "1.0"
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
