@@ -51,3 +51,28 @@ func TestMaxParallelParticipantsRoundTrips(t *testing.T) {
 		t.Errorf("cap after round trip = %d, want 2", cfg2.Limits.MaxParallelParticipants)
 	}
 }
+
+// The interview used to run three rounds of questions, each a turn the human
+// had to take before the spec could start. It is now one round, answered in a
+// single interaction, capped so a long list does not get skipped.
+func TestInterviewDefaultsAreShort(t *testing.T) {
+	c, err := Parse([]byte(`{"agents":{"a":{"type":"opencode"}}}`), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Limits.MaxInterviewRounds != 1 {
+		t.Errorf("default interview rounds = %d, want 1", c.Limits.MaxInterviewRounds)
+	}
+	if c.Limits.MaxInterviewQuestions != 5 {
+		t.Errorf("default interview questions = %d, want 5", c.Limits.MaxInterviewQuestions)
+	}
+
+	// An explicit setting must survive — old projects keep what they chose.
+	c2, err := Parse([]byte(`{"agents":{"a":{"type":"opencode"}},"limits":{"max_interview_rounds":3}}`), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.Limits.MaxInterviewRounds != 3 {
+		t.Errorf("explicit rounds = %d, want 3 respected", c2.Limits.MaxInterviewRounds)
+	}
+}

@@ -88,6 +88,11 @@ type Limits struct {
 	AgentRetries        int      `json:"agent_retries"`
 	AgentTimeout        Duration `json:"agent_timeout"`
 	TestTimeout         Duration `json:"test_timeout"`
+	// MaxInterviewQuestions caps how many questions one round may ask. The
+	// round is answered in a single interaction, so a long list costs one
+	// turn rather than eight — but a shorter one gets answered, while a
+	// marathon list gets skipped.
+	MaxInterviewQuestions int `json:"max_interview_questions"`
 	// MaxParallelParticipants caps how many roundtable seats run at once;
 	// 0 means all of them at once. Roundtable participants fan out in
 	// parallel, so a provider that allows only a couple of concurrent
@@ -208,8 +213,14 @@ func Load(path string) (*Config, error) {
 
 func (c *Config) applyDefaults() {
 	l := &c.Limits
+	// One round by default: a round is now answered in a single interaction,
+	// so further rounds only add agent waits before the spec. Configs that
+	// set the value explicitly keep what they set.
 	if l.MaxInterviewRounds <= 0 {
-		l.MaxInterviewRounds = 3
+		l.MaxInterviewRounds = 1
+	}
+	if l.MaxInterviewQuestions <= 0 {
+		l.MaxInterviewQuestions = 5
 	}
 	if l.MaxTaskAttempts <= 0 {
 		l.MaxTaskAttempts = 4
