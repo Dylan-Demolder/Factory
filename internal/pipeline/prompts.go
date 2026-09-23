@@ -104,7 +104,11 @@ func interviewSystem() string {
 	return "You are a senior product engineer helping a user turn a project idea into a buildable specification. " + autonomyNote
 }
 
-func interviewPrompt(p *state.Project, round, maxRounds int) string {
+func interviewPrompt(p *state.Project, round, maxRounds, maxQuestions int) string {
+	roundLine := fmt.Sprintf("This is question round %d of at most %d.", round, maxRounds)
+	if maxRounds <= 1 {
+		roundLine = "This is the interview's only round, so make it count."
+	}
 	return fmt.Sprintf(`Project name: %s
 
 Idea:
@@ -113,11 +117,11 @@ Idea:
 Interview so far:
 %s
 
-This is question round %d of at most %d. Ask the next batch of clarifying questions (at most 6) that most reduce ambiguity for an autonomous build. Focus on: who the real users are and what they genuinely need to do end to end; core features versus non-goals; platform, stack and deployment constraints; data, integrations and external services (and credentials the agents won't have); quality bar; how success is judged.
+%s Ask at most %d clarifying questions — they will be answered together in one go, so a short list gets a real answer and a long one gets skipped. Ask what most reduces ambiguity for an autonomous build: who the real users are and what they genuinely need end to end; core features versus non-goals; platform, stack and deployment constraints; data, integrations and external services (and credentials the agents won't have); quality bar; how success is judged.
 Don't ask things you can sensibly decide yourself. Where useful, include your proposed default in the question so the user can simply accept it.
 If you already have enough to write a complete spec, set "ready": true and return no questions.
 
-Respond with ONLY JSON: {"questions":["..."],"ready":false}`, p.Name, p.Idea, transcript(p.Interview), round, maxRounds)
+Respond with ONLY JSON: {"questions":["..."],"ready":false}`, p.Name, p.Idea, transcript(p.Interview), roundLine, maxQuestions)
 }
 
 func draftSpecPrompt(p *state.Project) string {

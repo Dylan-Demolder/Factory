@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -127,6 +128,29 @@ func (a *Asker) Answer(text string) error {
 	default:
 		return ErrNotWaiting
 	}
+}
+
+// AskMany collects the round's answers. The terminal costs nothing per
+// turn — there is no server round trip between questions — so this steps
+// through them one at a time while still returning the whole batch, which
+// is the contract the interview loop and the browser rely on.
+func (a *Asker) AskMany(questions []string, quick ...string) ([]string, error) {
+	answers := make([]string, 0, len(questions))
+	for _, q := range questions {
+		ans, err := a.Ask(q, quick...)
+		if err != nil && err != io.EOF {
+			return answers, err
+		}
+		answers = append(answers, ans)
+		if strings.TrimSpace(ans) == "/done" || err == io.EOF {
+			// Fill the rest so indexes still line up, then stop.
+			for len(answers) < len(questions) {
+				answers = append(answers, "")
+			}
+			return answers, err
+		}
+	}
+	return answers, nil
 }
 
 // Close releases a blocked Ask, e.g. when the user leaves the interview.

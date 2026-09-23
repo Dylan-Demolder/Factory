@@ -608,13 +608,19 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	msgs, waiting := sess.chat.Since(after)
-	writeJSON(w, map[string]any{"messages": msgs, "waiting": waiting, "active": active, "exists": true, "error": errMsg})
+	writeJSON(w, map[string]any{
+		"messages": msgs, "waiting": waiting, "active": active,
+		"exists": true, "error": errMsg,
+		// >1 means the interview wants a form of answers, not one reply.
+		"pending": sess.chat.Pending(),
+	})
 }
 
 func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
-		Text string `json:"text"`
+		Text    string   `json:"text"`
+		Answers []string `json:"answers"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -625,6 +631,16 @@ func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	if !ok {
 		writeErr(w, http.StatusConflict, "no interview in progress")
+		return
+	}
+	// A batch interview takes the whole form at once; a single pending
+	// question (approval, an open question) takes one line as before.
+	if body.Answers != nil {
+		if err := sess.chat.AnswerBatch(body.Answers); err != nil {
+			writeErr(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
 		return
 	}
 	if err := sess.chat.Answer(body.Text); err != nil {

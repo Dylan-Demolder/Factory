@@ -36,13 +36,19 @@ type Chat struct {
 	mu       sync.Mutex
 	msgs     []Msg
 	waiting  bool
+	pending  int // questions awaiting answers in the current batch
 	answers  chan string
+	batch    chan []string
 	closed   chan struct{}
 	closeOne sync.Once
 }
 
 func NewChat() *Chat {
-	return &Chat{answers: make(chan string), closed: make(chan struct{})}
+	return &Chat{
+		answers: make(chan string),
+		batch:   make(chan []string),
+		closed:  make(chan struct{}),
+	}
 }
 
 var ErrNotWaiting = errors.New("nothing is waiting for an answer right now")
@@ -90,13 +96,107 @@ func (c *Chat) Ask(question string, quick ...string) (string, error) {
 	}
 }
 
+// AskMany posts every question of the round at once and blocks until the
+// browser submits one answer per question.
+//
+// The interview used to post one question, wait for its answer, then post the
+// next — eight questions meant eight turns, and a project could sit half
+// answered for hours because someone had to come back seven more times.
+func (c *Chat) AskMany(questions []string, quick ...string) ([]string, error) {
+	if len(questions) == 0 {
+		return nil, nil
+	}
+	var qs []Quick
+	for _, v := range quick {
+		if label, ok := quickLabels[v]; ok {
+			qs = append(qs, Quick{Label: label, Value: v})
+		}
+	}
+	c.mu.Lock()
+	for i, q := range questions {
+		c.msgs = append(c.msgs, Msg{
+			ID: len(c.msgs) + 1, Role: "agent",
+			Text:  fmt.Sprintf("[%d/%d] %s", i+1, len(questions), q),
+			Quick: qs, Time: time.Now().UTC(),
+		})
+	}
+	c.waiting = true
+	c.pending = len(questions)
+	c.mu.Unlock()
+
+	defer func() {
+		c.mu.Lock()
+		c.waiting, c.pending = false, 0
+		c.mu.Unlock()
+	}()
+
+	select {
+	case ans := <-c.batch:
+		c.mu.Lock()
+		for i, a := range ans {
+			shown := a
+			if strings.TrimSpace(shown) == "" {
+				shown = "(no preference)"
+			}
+			c.msgs = append(c.msgs, Msg{ID: len(c.msgs) + 1, Role: "user",
+				Text: fmt.Sprintf("[%d/%d] %s", i+1, len(ans), shown), Time: time.Now().UTC()})
+		}
+		c.mu.Unlock()
+		return ans, nil
+	case <-c.closed:
+		return make([]string, len(questions)), io.EOF
+	}
+}
+
+// AnswerBatch delivers the browser's whole form for a pending AskMany.
+func (c *Chat) AnswerBatch(answers []string) error {
+	c.mu.Lock()
+	if !c.waiting || c.pending == 0 {
+		c.mu.Unlock()
+		return ErrNotWaiting
+	}
+	if len(answers) != c.pending {
+		got, want := len(answers), c.pending
+		c.mu.Unlock()
+		return fmt.Errorf("need %d answers, got %d", want, got)
+	}
+	c.waiting, c.pending = false, 0
+	c.mu.Unlock()
+
+	select {
+	case c.batch <- answers:
+		return nil
+	case <-c.closed:
+		return errors.New("the interview has ended")
+	case <-time.After(2 * time.Second):
+		return ErrNotWaiting
+	}
+}
+
+// Pending reports how many answers the current batch expects, so the browser
+// knows to render a form rather than a single input.
+func (c *Chat) Pending() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.pending
+}
+
 // Answer delivers the browser's reply to a pending Ask.
 func (c *Chat) Answer(text string) error {
 	c.mu.Lock()
-	waiting := c.waiting
+	waiting, pending := c.waiting, c.pending
 	c.mu.Unlock()
 	if !waiting {
 		return ErrNotWaiting
+	}
+	// A batch interview wants the whole form: accept a single-line reply when
+	// there is exactly one question (so curl examples keep working), and
+	// otherwise say precisely what to send.
+	if pending > 1 {
+		return fmt.Errorf("the interview is waiting for %d answers — post {\"answers\":[…]}", pending)
+	}
+	if pending == 1 {
+		return c.AnswerBatch([]string{text})
 	}
 	shown := text
 	if strings.TrimSpace(shown) == "" {

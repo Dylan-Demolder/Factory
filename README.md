@@ -365,7 +365,7 @@ It's a single-page app built into the binary. There's no Node, no build step and
 
 ### Screens
 
-**Interview.** Each project's spec is a chat. Questions come with quick replies (*Skip to the spec*, *Approve spec ✓*). Sending an empty message means "no preference". Status lines show what the agents are doing ("drafting the spec", "roundtable spec: 3 participants"). Answers are saved as you go, so you can close the tab, and if the server restarts, **Resume interview** carries on from your saved answers.
+**Interview.** Each project's spec is a chat. A round of questions arrives **together** — `limits.max_interview_questions` (default 5) in one turn, answered as a form in a single submission — and by default there is **one round** (`limits.max_interview_rounds`), so the spec starts after one question turn instead of eight. Quick replies (*Skip to the spec*, *Approve spec ✓*) still work on their own; an empty answer means "no preference". Status lines show what the agents are doing. Answers are saved as you go, so you can close the tab, and if the server restarts, **Resume interview** carries on from your saved answers.
 
 ![Interview](docs/images/interview.png)
 
@@ -606,7 +606,7 @@ All endpoints are under `<base-path>/api/`, take and return JSON, and require au
 | `POST /projects/{id}/spec` | `{reset?, auto_start?}` | Start or resume the interview (`reset: true` to reopen an approved spec) |
 | `DELETE /projects/{id}/spec` | | Pause the interview |
 | `GET /projects/{id}/chat` | `?after=N` | `{messages: [{id, role, text, quick}], waiting, active, exists}` |
-| `POST /projects/{id}/chat` | `{text}` | Answer the pending question (`""` = no preference, `"y"` = approve, `"/done"` = skip) |
+| `POST /projects/{id}/chat` | `{text}` **or** `{answers:[…]}` | Answer the pending question (`""` = no preference, `"y"` = approve, `"/done"` = skip). A question **round** arrives as one batch — `GET …/chat` reports `pending: N` — and needs `{answers:[…]}` with exactly N entries; a single pending question (approval, an open question) still takes `{text}` |
 | `POST /projects/{id}/run` | | `{pid}`, starts a background build |
 | `POST /projects/{id}/stop` | | Stops it |
 | `DELETE /projects/{id}` | `?force=true` | Deletes the project, its files and git history. **409** while a build is running unless `force=true` (stops it first); cancels a live interview; 404 unknown, 400 bad name |
@@ -624,9 +624,11 @@ Example: drive a whole interview with curl:
 T=your-token; U=http://127.0.0.1:7700/api
 curl -s -H "Authorization: Bearer $T" -H 'Content-Type: application/json' \
      -d '{"name":"notes","idea":"Markdown notes CLI with tags and search","auto_start":true}' $U/projects
-curl -s -H "Authorization: Bearer $T" "$U/projects/notes/chat?after=0" | jq '.messages[-1].text, .waiting'
-curl -s -H "Authorization: Bearer $T" -H 'Content-Type: application/json' -d '{"text":"Just me, on Linux"}' $U/projects/notes/chat
-# … repeat, then approve:
+curl -s -H "Authorization: Bearer $T" "$U/projects/notes/chat?after=0" | jq '.messages[].text, .pending'
+# A round arrives as one batch; answer it in a single request (N entries):
+curl -s -H "Authorization: Bearer $T" -H 'Content-Type: application/json' \
+     -d '{"answers":["Just me, on Linux","","/done"]}' $U/projects/notes/chat
+# A single pending question (approval, an open question) still takes {text}:
 curl -s -H "Authorization: Bearer $T" -H 'Content-Type: application/json' -d '{"text":"y"}' $U/projects/notes/chat
 ```
 
@@ -661,7 +663,8 @@ curl -s -H "Authorization: Bearer $T" -H 'Content-Type: application/json' -d '{"
     "participants": [ { "agent": "opencode", "persona": "…" } ]
   },
   "limits": {
-    "max_interview_rounds": 3,
+    "max_interview_rounds": 1,                 // one round, answered in a single interaction
+    "max_interview_questions": 5,            // cap for that round
     "max_task_attempts": 4,
     "max_acceptance_rounds": 3,
     "agent_retries": 2,                  // retries on agent errors (with backoff)

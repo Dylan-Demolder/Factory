@@ -46,28 +46,37 @@ func (e *Engine) Spec(ctx context.Context) error {
 			Ready     bool     `json:"ready"`
 		}
 		if _, err := e.callRoleJSON(ctx, config.RoleInterviewer, agent.Request{
-			Stage: "interview", System: interviewSystem(), Prompt: interviewPrompt(p, round, cfg.Limits.MaxInterviewRounds), ReadOnly: true,
+			Stage: "interview", System: interviewSystem(), Prompt: interviewPrompt(p, round, cfg.Limits.MaxInterviewRounds, cfg.Limits.MaxInterviewQuestions), ReadOnly: true,
 		}, &reply); err != nil {
 			return err
 		}
 		if len(reply.Questions) == 0 {
 			break
 		}
-		e.UI.Say("\nA few questions. Leave an answer empty for \"no preference\", or answer /done to skip straight to the spec.")
+		e.UI.Say("\nAnswer them together — leave any blank for \"no preference\", or /done to skip straight to the spec.")
+		answers, err := e.UI.AskMany(reply.Questions, "/done")
+		if err != nil && err != io.EOF {
+			return err
+		}
 		for i, q := range reply.Questions {
-			ans, err := e.UI.Ask(fmt.Sprintf("[%d/%d] %s", i+1, len(reply.Questions), q), "/done")
-			if strings.TrimSpace(ans) == "/done" || (err == io.EOF && ans == "") {
+			ans := ""
+			if i < len(answers) {
+				ans = answers[i]
+			}
+			if strings.TrimSpace(ans) == "/done" {
 				done = true
 				break
-			}
-			if err != nil && err != io.EOF {
-				return err
 			}
 			if strings.TrimSpace(ans) == "" {
 				ans = noPreference
 			}
 			p.Interview = append(p.Interview, state.QA{Q: q, A: ans})
 			e.save()
+		}
+		// Input closed with nothing answered: treat it as skipping ahead,
+		// which is what the old per-question EOF handling did.
+		if err == io.EOF && len(p.Interview) == 0 {
+			done = true
 		}
 		if reply.Ready {
 			break
