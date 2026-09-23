@@ -88,6 +88,12 @@ type Limits struct {
 	AgentRetries        int      `json:"agent_retries"`
 	AgentTimeout        Duration `json:"agent_timeout"`
 	TestTimeout         Duration `json:"test_timeout"`
+	// MaxParallelParticipants caps how many roundtable seats run at once;
+	// 0 means all of them at once. Roundtable participants fan out in
+	// parallel, so a provider that allows only a couple of concurrent
+	// requests — camelStream's stream count, for instance — needs this to
+	// have a larger panel without queueing behind its own allowance.
+	MaxParallelParticipants int `json:"max_parallel_participants,omitempty"`
 }
 
 type Config struct {
@@ -213,6 +219,9 @@ func (c *Config) applyDefaults() {
 	}
 	if l.AgentRetries < 0 {
 		l.AgentRetries = 0
+	}
+	if l.MaxParallelParticipants < 0 {
+		l.MaxParallelParticipants = 0
 	}
 	if l.AgentTimeout.Duration <= 0 {
 		l.AgentTimeout.Duration = 30 * time.Minute
