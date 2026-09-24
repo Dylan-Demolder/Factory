@@ -1,61 +1,18 @@
 {
-  "agents": {
-    "opencode": {
-      "type": "opencode",
-      "model": "",
-      "timeout": "45m"
-    },
-    "camel-a": {
-      "type": "command",
-      "command": "python3",
-      "args": ["{{config_dir}}/adapters/camel_agent.py"],
-      "env": {
-        "CAMEL_PLATFORM": "openai-compatible-model",
-        "CAMEL_MODEL": "REPLACE_ME",
-        "CAMEL_BASE_URL": "REPLACE_ME",
-        "CAMEL_API_KEY_ENV": "CAMEL_A_API_KEY"
-      },
-      "timeout": "10m"
-    },
-    "camel-b": {
-      "type": "command",
-      "command": "python3",
-      "args": ["{{config_dir}}/adapters/camel_agent.py"],
-      "env": {
-        "CAMEL_PLATFORM": "openai-compatible-model",
-        "CAMEL_MODEL": "REPLACE_ME",
-        "CAMEL_BASE_URL": "REPLACE_ME",
-        "CAMEL_API_KEY_ENV": "CAMEL_B_API_KEY"
-      },
-      "timeout": "10m"
-    }
-  },
+  "agents": {},
   "roles": {
-    "interviewer": "camel-a",
-    "planner": "camel-a",
-    "builder": "opencode",
-    "reviewer": "camel-b",
-    "moderator": "camel-a"
+    "interviewer": "",
+    "planner": "",
+    "builder": "",
+    "reviewer": "",
+    "moderator": ""
   },
   "roundtable": {
     "rounds": 2,
     "on_spec": true,
     "on_plan": true,
     "on_tasks": true,
-    "participants": [
-      {
-        "agent": "opencode",
-        "persona": "Pragmatic senior engineer. You can read the repository. Care about simplicity, correctness, maintainability and what is actually feasible to build and test."
-      },
-      {
-        "agent": "camel-a",
-        "persona": "Product owner and end-user advocate. Care about whether real users can achieve their goals end to end, about genuine use cases rather than feature checklists, and about ruthless scope control."
-      },
-      {
-        "agent": "camel-b",
-        "persona": "QA and test lead. Care about testability, edge cases, failure modes, security, and whether tests prove real behaviour rather than just passing."
-      }
-    ]
+    "participants": []
   },
   "limits": {
     "max_interview_rounds": 1,

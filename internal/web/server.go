@@ -419,6 +419,12 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusFailedDependency, "no usable factory config: "+err.Error())
 		return
 	}
+	// factory ships no default agents, so an empty config is the normal
+	// first-run state. Report it as "not set up yet" rather than a 500.
+	if err := cfg.RequireConfigured(); err != nil {
+		writeErr(w, http.StatusFailedDependency, err.Error())
+		return
+	}
 	pr, err := app.Create(dir, body.Name, body.Idea, cfg, cfgPath)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
