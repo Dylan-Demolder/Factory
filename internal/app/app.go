@@ -78,6 +78,12 @@ func Open(dir, cfgFlag string) (*Project, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Every entry point funnels through here, so this is the one place that
+	// has to say "you haven't chosen any agents yet" — before a directory is
+	// created and an interview starts that could not possibly succeed.
+	if err := cfg.RequireConfigured(); err != nil {
+		return nil, fmt.Errorf("%s (config: %s)", err, path)
+	}
 	return &Project{Cfg: cfg, CfgPath: path, Store: store, P: p}, nil
 }
 
