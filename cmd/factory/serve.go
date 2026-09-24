@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dylan-demolder/factory/internal/config"
 	"github.com/dylan-demolder/factory/internal/web"
 )
 
@@ -143,11 +144,10 @@ func envOr(key, def string) string {
 }
 
 func loadOrCreateToken() (string, string, error) {
-	dir, err := os.UserConfigDir()
+	path, err := config.TokenPath()
 	if err != nil {
 		return "", "", err
 	}
-	path := filepath.Join(dir, "factory", "token")
 	if data, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(data))) >= 16 {
 		return strings.TrimSpace(string(data)), path, nil
 	}
