@@ -195,17 +195,9 @@ func (e *Engine) callWith(ctx context.Context, label string, a agent.Agent, req 
 	return "", lastErr
 }
 
-// callJSON calls a named agent and decodes a JSON answer into v, asking once
-// more for a corrected answer if parsing fails.
-func (e *Engine) callJSON(ctx context.Context, name string, req agent.Request, v any) (string, error) {
-	a, err := e.agent(name)
-	if err != nil {
-		return "", err
-	}
-	return e.callJSONWith(ctx, name, a, req, v)
-}
-
-// callRoleJSON is callJSON for a pipeline seat, applying its model override.
+// callRoleJSON resolves a pipeline seat — applying its model override — then
+// calls a named agent and decodes a JSON answer into v, asking once more for
+// a corrected answer if parsing fails.
 func (e *Engine) callRoleJSON(ctx context.Context, role string, req agent.Request, v any) (string, error) {
 	s, err := e.seat(role)
 	if err != nil {
