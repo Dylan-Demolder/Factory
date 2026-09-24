@@ -4,7 +4,7 @@
 
 factory takes a project from a rough idea to working software you can test, using the coding agents you already pay for: opencode for building, plus as many other agents as you like (such as CAMEL-AI) for discussion and review. It interviews you until the idea can be built, has your agents argue over the spec, and then works on its own. It plans the work, holds a design roundtable before every task, builds, runs your tests, rejects fake tests, tries out every genuine use case the way a real user would, and loops until it's done.
 
-It's a lightweight alternative to heavier orchestrators such as Paperclip: **one Go binary, no database, no containers, no runtime dependencies** (the terminal interface's UI library is compiled in, so there is nothing to install alongside it). Everything is plain files inside your project, so you can stop it at any moment and pick up exactly where it left off. It comes with a **terminal workspace** for driving builds yourself and a **web interface** you can run on your Linux machine and reach from anywhere, including from inside your own website.
+It's a lightweight alternative to heavier orchestrators such as Paperclip: **one Go binary, no database, no containers** (the terminal interface's UI library is compiled in). What it drives is up to you — factory ships **no agents and no models**, so nothing needs installing alongside the binary itself beyond whichever CLIs or keys you choose to use. Everything is plain files inside your project, so you can stop it at any moment and pick up exactly where it left off. It comes with a **terminal workspace** for driving builds yourself and a **web interface** you can run on your Linux machine and reach from anywhere, including from inside your own website.
 
 ![Project overview](docs/images/overview.png)
 
@@ -24,6 +24,7 @@ It's a lightweight alternative to heavier orchestrators such as Paperclip: **one
   - [How testing layers stack up](#how-testing-layers-stack-up)
 - [Quick start](#quick-start)
 - [Setting up your agents](#setting-up-your-agents)
+  - [Cookbook for many services](docs/agents.md)
 - [The terminal workspace](#the-terminal-workspace)
 - [The web interface](#the-web-interface)
 - [Running it on your Linux machine](#running-it-on-your-linux-machine)
@@ -234,10 +235,11 @@ Passing tests aren't the finish line. When no tasks remain:
 go install github.com/dylan-demolder/factory/cmd/factory@latest
 #   or: git clone … && cd Factory && go build -o ~/.local/bin/factory ./cmd/factory
 
-# 2. Create a config
+# 2. Create a config and add the agents you use
 mkdir -p ~/.config/factory && cd ~/.config/factory
-factory init                 # writes factory.json + adapters/camel_agent.py
-$EDITOR factory.json         # models, CAMEL endpoints (see below)
+factory init                                  # writes an empty factory.json
+factory agent add oc --type opencode          # your builder (fills every seat)
+factory agent add reviewer --type command --command claude --arg -p --arg '{{prompt}}' --role reviewer
 
 # 3. Check every agent answers
 factory doctor
@@ -256,6 +258,29 @@ factory status todo-cli
 
 ## Setting up your agents
 
+factory **ships no agents and no models**. `factory init` writes an empty
+config; you choose the services, the models, and who reviews whom.
+
+```sh
+factory agent add oc --type opencode                       # your builder
+factory agent add qa --type command --command claude --arg -p --arg '{{prompt}}' --role reviewer
+factory agent list                                         # who sits where
+factory doctor                                             # does everyone answer?
+```
+
+**[docs/agents.md](docs/agents.md) is the cookbook** — ready-to-paste setups
+for coding CLIs, OpenAI-compatible APIs, local models (Ollama, LM Studio,
+vLLM), OpenRouter, and your own service, plus the roundtable panel and
+troubleshooting.
+
+Three adapter types cover everything:
+
+| Type | Use for | Prompt delivery |
+|---|---|---|
+| `opencode` | The builder, or any seat that should read the repo | Argument (or a file if it's huge) |
+| `command` | Any CLI: `claude -p`, `llm`, `aider`, curl to your own service, a wrapper script | stdin, unless an arg contains `{{prompt}}` or `{{prompt_file}}` |
+| `openai` | Any OpenAI-compatible `/chat/completions` endpoint (text only, **can't be the builder**) | HTTP |
+
 ### opencode (the builder)
 
 ```json
@@ -268,9 +293,9 @@ factory status todo-cli
 - Prompts larger than about 96 KB are written to `.factory/tmp/` and opencode is told to read that file, to get around the operating system's argument-length limit.
 - Unattended runs can't answer permission prompts, so before planning factory writes an `opencode.json` into the project that allows `edit`, `bash` and `webfetch`. An existing `opencode.json` or `opencode.jsonc` is left alone. If you keep your own, make sure it doesn't prompt either.
 
-### CAMEL-AI agents
+### CAMEL-AI agents (optional)
 
-`factory init` writes `adapters/camel_agent.py`, a small bridge that reads the prompt on stdin and prints the reply from a CAMEL `ChatAgent`:
+One of many supported services — factory does not require it, and ships no config that assumes it. If you do use CAMEL, `factory init` drops a small bridge at `adapters/camel_agent.py` that reads the prompt on stdin and prints the reply from a CAMEL `ChatAgent`:
 
 ```json
 "camel-a": {
@@ -300,13 +325,7 @@ factory init --help >/dev/null   # (config path is printed by `factory doctor`)
 cp <repo>/internal/config/assets/camel_agent.py ~/.config/factory/adapters/
 ```
 
-### Anything else
-
-| Type | Use for | Prompt delivery |
-|---|---|---|
-| `opencode` | The builder, or any seat that should read the repo | Argument (or a file if it's huge) |
-| `command` | Any CLI: `claude -p`, `llm`, `aider`, curl to your own service, a wrapper script | stdin, unless an arg contains `{{prompt}}` or `{{prompt_file}}` |
-| `openai` | Any OpenAI-compatible `/chat/completions` endpoint (text only, **can't be the builder**) | HTTP |
+### Placeholders and agent environment
 
 `command` agents receive `FACTORY_STAGE` (for example `interview`, `plan`, `build`, `review`, `trial`, `roundtable-task-T3`, `roundtable-acceptance-1-synthesis`) and `FACTORY_READONLY` in their environment. A wrapper script can use these to send different stages to different models.
 
@@ -433,8 +452,9 @@ WantedBy=default.target
 
 ```sh
 FACTORY_TOKEN=your-long-random-token
-CAMEL_A_API_KEY=…
-CAMEL_B_API_KEY=…
+# one variable per key your agents name with api_key_env / CAMEL_API_KEY_ENV:
+OPENAI_API_KEY=…
+ANTHROPIC_API_KEY=…
 PATH=/home/you/.local/bin:/usr/local/bin:/usr/bin:/bin
 ```
 
@@ -562,7 +582,9 @@ factory                               open the interactive workspace (on a termi
 factory tui [flags]                   the same, as an explicit command
     --workspace DIR       where projects live (default ~/factory-projects)
     --config PATH         config to use for new projects
-factory init [--force]                    write factory.json + adapters/camel_agent.py here
+factory init [--force]                    write an empty factory.json here (--force overwrites)
+factory agent list [--json]               show every agent and the seats it fills
+factory agent add <name> --type KIND      add an agent; --role seats it, see `factory agent add -h`
 factory doctor [--config F]               ping every agent, show role mapping
 factory new <name> [flags]                create project → interview → approve → offer to start
     --dir PATH          project directory (default ./<name>; may be an existing repo)
