@@ -112,13 +112,39 @@ func TestModelsEndpointSurvivesProviderFailure(t *testing.T) {
 		t.Errorf("warnings = %v", warnings)
 	}
 	sources := out["sources"].([]any)
+	// Assert on which sources survive rather than how many: the static list
+	// grows as more services are documented, and a count would then only be
+	// re-typed on every addition.
+	remaining := map[string]bool{}
 	for _, s := range sources {
-		if s.(map[string]any)["id"] == "opencode" {
-			t.Error("opencode source present despite the provider failing")
+		remaining[s.(map[string]any)["id"].(string)] = true
+	}
+	if remaining["opencode"] {
+		t.Error("opencode source present despite the provider failing")
+	}
+	for _, id := range []string{"camel", "claude", "codex"} {
+		if !remaining[id] {
+			t.Errorf("static source %q missing when the provider failed: %v", id, remaining)
 		}
 	}
-	if len(sources) != 3 {
-		t.Errorf("static sources = %d, want 3 (camel, claude, codex)", len(sources))
+	if len(sources) < 3 {
+		t.Errorf("static sources = %d, want at least the documented three", len(sources))
+	}
+	// Every static source must still be usable on its own: either a real
+	// list to pick from, or free text that says which flag to set.
+	for _, s := range sources {
+		m := s.(map[string]any)
+		kind, _ := m["kind"].(string)
+		switch kind {
+		case "pick":
+			if ms, ok := m["models"].([]any); !ok || len(ms) == 0 {
+				t.Errorf("%v: kind=pick with no models", m)
+			}
+		case "text":
+			// fine: a hint or note tells the user what to type
+		default:
+			t.Errorf("%v: unknown kind %q", m, kind)
+		}
 	}
 }
 
