@@ -279,9 +279,12 @@ func (c *Config) validate() []FieldError {
 	fail := func(field, format string, a ...any) {
 		errs = append(errs, FieldError{Field: field, Msg: fmt.Sprintf(format, a...)})
 	}
-	if len(c.Agents) == 0 {
-		fail("agents", "no agents configured")
-	}
+	// A config with no agents at all is what `factory init` writes: the
+	// operator picks their own agents, models and seats instead of
+	// inheriting ours. That is a valid, deliberately-empty state, not a
+	// mistake — but nothing may point at an agent that does not exist, and
+	// an empty role is only acceptable while there is nobody to put in it.
+	fresh := len(c.Agents) == 0
 	for name, a := range c.Agents {
 		switch a.Type {
 		case "opencode":
@@ -297,6 +300,9 @@ func (c *Config) validate() []FieldError {
 			fail("agents."+name+".type", "agent %q: unknown type %q (want opencode, command or openai)", name, a.Type)
 		}
 	}
+	// check reports a name that does not resolve to an agent. checkRole is
+	// the same, except that an empty seat only becomes an error once at
+	// least one agent exists to fill it.
 	check := func(field, role, name string) {
 		if name == "" {
 			fail(field, "role %s: no agent assigned", role)
@@ -304,11 +310,25 @@ func (c *Config) validate() []FieldError {
 			fail(field, "role %s: unknown agent %q", role, name)
 		}
 	}
-	check("roles.interviewer", "interviewer", c.Roles.Interviewer)
-	check("roles.planner", "planner", c.Roles.Planner)
-	check("roles.builder", "builder", c.Roles.Builder)
-	check("roles.reviewer", "reviewer", c.Roles.Reviewer)
-	check("roles.moderator", "moderator", c.Roles.Moderator)
+	checkRole := func(field, role, name string) {
+		if name == "" {
+			if !fresh {
+				fail(field, "role %s: no agent assigned", role)
+			}
+			return
+		}
+		if _, ok := c.Agents[name]; !ok {
+			fail(field, "role %s: unknown agent %q", role, name)
+		}
+	}
+	checkRole("roles.interviewer", "interviewer", c.Roles.Interviewer)
+	checkRole("roles.planner", "planner", c.Roles.Planner)
+	checkRole("roles.builder", "builder", c.Roles.Builder)
+	checkRole("roles.reviewer", "reviewer", c.Roles.Reviewer)
+	checkRole("roles.moderator", "moderator", c.Roles.Moderator)
+	if fresh && len(c.RoleModels) > 0 {
+		fail("role_models", "role_models pins a model to a seat, but no agents are configured yet")
+	}
 	if b, ok := c.Agents[c.Roles.Builder]; ok && b.Type == "openai" {
 		fail("roles.builder", "role builder: agent %q is type openai and cannot edit files; use opencode or a command agent", c.Roles.Builder)
 	}
@@ -342,6 +362,23 @@ func (c *Config) validate() []FieldError {
 		check(fmt.Sprintf("roundtable.participants.%d.agent", i), role, p.Agent)
 	}
 	return errs
+}
+
+// Configured reports whether the operator has added at least one agent.
+//
+// A freshly `factory init`'d config is valid but empty by design: factory
+// does not ship opinions about whose models to use. Every command that needs
+// a working panel should call RequireConfigured first, so the user gets one
+// clear instruction instead of a validation error or a silent no-op.
+func (c *Config) Configured() bool { return len(c.Agents) > 0 }
+
+// RequireConfigured returns nil when agents exist, or a single actionable
+// error telling the user how to add their first one.
+func (c *Config) RequireConfigured() error {
+	if c.Configured() {
+		return nil
+	}
+	return errors.New("no agents configured yet — add one with `factory agent add` (see docs/agents.md), or open the org chart")
 }
 
 // ResolvePath finds the config file to use, in the same order as Resolve, but
