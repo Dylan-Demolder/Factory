@@ -139,3 +139,66 @@ func TestSayIgnoresBlankMessages(t *testing.T) {
 		t.Errorf("blank Say added a line: %+v", lines)
 	}
 }
+
+// Regression: an answer handed over before Ask reached its select used to be
+// dropped by Answer's default branch — ErrNotWaiting for the user, and an
+// Ask that never returned.
+//
+// Ask sets waiting, unlocks, fires a redraw, and only then blocks. Answer
+// landing in that gap passed the waiting check but found no receiver. It
+// showed up as an intermittent TestAskBlocksUntilAnswered failure and, in
+// the running program, as an interview that silently ignored what you typed.
+// The answers channel is buffered now, so the reply waits for Ask instead.
+func TestAnswerNeverDroppedBetweenAskAndItsSelect(t *testing.T) {
+	type res struct {
+		text string
+		err  error
+	}
+	for i := 0; i < 500; i++ {
+		a := NewAsker(nil)
+		done := make(chan res, 1)
+		go func() {
+			text, err := a.Ask("What should it do?")
+			done <- res{text, err}
+		}()
+		// Spin, don't sleep: land in the window while it is still open.
+		for {
+			if _, waiting, _ := a.Snapshot(); waiting {
+				break
+			}
+		}
+		if err := a.Answer("the answer"); err != nil {
+			t.Fatalf("iteration %d: Answer dropped the reply: %v", i, err)
+		}
+		select {
+		case got := <-done:
+			if got.err != nil {
+				t.Fatalf("iteration %d: Ask returned %v", i, got.err)
+			}
+			if got.text != "the answer" {
+				t.Fatalf("iteration %d: Ask got %q, want %q", i, got.text, "the answer")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iteration %d: Ask never returned — the answer was lost", i)
+		}
+	}
+}
+
+// Close must leave waiting false, or later answers look accepted while
+// nobody is left to read them.
+func TestWaitingClearsWhenAskEnds(t *testing.T) {
+	a := NewAsker(nil)
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.Ask("still open?")
+		done <- err
+	}()
+	waitForWaiting(t, a)
+	a.Close()
+	if err := <-done; err != context.Canceled {
+		t.Fatalf("Ask after Close = %v, want context.Canceled", err)
+	}
+	if _, waiting, _ := a.Snapshot(); waiting {
+		t.Error("waiting is still true after Ask ended — the next answer would be swallowed")
+	}
+}
