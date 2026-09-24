@@ -40,7 +40,15 @@ jobs:
       # A deeper pass than go vet: unused code, shadowed values, common
       # mistakes. Pinned so a new staticcheck release cannot redden CI on
       # its own schedule.
+      #
+      # staticcheck builds with its own toolchain: it requires a newer Go
+      # than go.mod declares, and setup-go pins GOTOOLCHAIN to the project's
+      # version, which refuses to build it. Only the linter binary fetches
+      # what it needs — the project itself is still compiled and tested with
+      # go.mod's version, so this does not raise the minimum Go for factory.
       - name: staticcheck
+        env:
+          GOTOOLCHAIN: auto
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
           staticcheck ./...
