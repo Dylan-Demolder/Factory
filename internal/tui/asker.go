@@ -45,8 +45,14 @@ type Asker struct {
 // goroutine) whenever it changes; the program marshals that into a redraw.
 func NewAsker(notify func()) *Asker {
 	return &Asker{
-		notify:  notify,
-		answers: make(chan string),
+		notify: notify,
+		// Buffered so Answer never has to wait for Ask to reach its select.
+		// Ask unlocks, fires a redraw and only then blocks, so an answer that
+		// arrived in that gap used to find no receiver and be dropped by
+		// Answer's default branch — the reply vanished and the interview
+		// hung. The waiting flag already admits at most one outstanding
+		// answer, so a single slot can never overflow.
+		answers: make(chan string, 1),
 		closed:  make(chan struct{}),
 	}
 }
@@ -94,6 +100,14 @@ func (a *Asker) Write(p []byte) (int, error) {
 
 // Ask blocks until the human answers. quick are the offered shortcuts.
 func (a *Asker) Ask(question string, quick ...string) (string, error) {
+	// An answer handed over by a previous Ask that this one never collected
+	// (it returned through `closed`) would otherwise be delivered to the
+	// wrong question. Nothing can be legitimately pending here: the waiting
+	// flag was false on entry, and only Ask raises it.
+	select {
+	case <-a.answers:
+	default:
+	}
 	a.mu.Lock()
 	a.quick = quick
 	a.waiting = true
@@ -105,6 +119,11 @@ func (a *Asker) Ask(question string, quick ...string) (string, error) {
 	case ans := <-a.answers:
 		return ans, nil
 	case <-a.closed:
+		// Mirror the web Chat: without this, waiting stays true after a
+		// close and later answers look accepted while nobody will read them.
+		a.mu.Lock()
+		a.waiting = false
+		a.mu.Unlock()
 		return "", context.Canceled
 	}
 }
