@@ -15,13 +15,14 @@ const roleModelsBase = `{
 }`
 
 func TestRoleModelsAccepted(t *testing.T) {
-	c, err := Parse([]byte(roleModelsBase+""), "")
-	if err != nil {
+	// The base config has to parse before we vary it — otherwise a later
+	// failure could be blamed on the override rather than the fixture.
+	if _, err := Parse([]byte(roleModelsBase), ""); err != nil {
 		t.Fatal(err)
 	}
 	// Adding an override must not disturb anything else.
 	with := `{"agents":{"oc":{"type":"opencode","model":"opencode-go/glm-5.3"},"cli":{"type":"command","command":"claude","args":["-p","--model","{{model}}"]},"bare":{"type":"command","command":"curl","args":["-s"]}},"roles":{"interviewer":"oc","planner":"oc","builder":"oc","reviewer":"cli","moderator":"bare"},"role_models":{"reviewer":"opencode-go/kimi-k3","builder":"opencode-go/minimax-m3"}}`
-	c, err = Parse([]byte(with), "")
+	c, err := Parse([]byte(with), "")
 	if err != nil {
 		t.Fatalf("valid role_models rejected: %v", err)
 	}

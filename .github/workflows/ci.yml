@@ -37,6 +37,14 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # A deeper pass than go vet: unused code, shadowed values, common
+      # mistakes. Pinned so a new staticcheck release cannot redden CI on
+      # its own schedule.
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+          staticcheck ./...
+
       - name: go build
         run: go build ./...
 

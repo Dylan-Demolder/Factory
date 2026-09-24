@@ -72,7 +72,6 @@ type Model struct {
 	delConfirm string
 
 	// screen state
-	home  homeState
 	fresh newProjectState
 	proj  projectState
 	org   orgState

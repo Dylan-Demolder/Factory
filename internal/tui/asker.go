@@ -128,7 +128,8 @@ func (a *Asker) Ask(question string, quick ...string) (string, error) {
 	}
 }
 
-// Answer supplies the human's reply; ErrNotWaiting if nobody was asking.
+// ErrNotWaiting is returned by Answer when no question is outstanding — the
+// human replied after the agent had already moved on.
 var ErrNotWaiting = fmt.Errorf("nothing is waiting for an answer")
 
 func (a *Asker) Answer(text string) error {

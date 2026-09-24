@@ -1,0 +1,81 @@
+name: Bug report
+description: Something in factory does not work the way it should
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the problem.
+      placeholder: factory reported "no config found" even though ~/.config/factory/factory.json exists.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce it
+      description: The exact commands, in order, starting from a clean state.
+      placeholder: |
+        mkdir -p ~/.config/factory && cd ~/.config/factory
+        factory init
+        factory doctor
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Paste logs, stack traces, or `.factory/run.log` excerpts. Redact API keys first — they look like `sk-…` or anything under a `*_KEY` variable.
+      render: text
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `factory doctor`, or the commit hash you built from.
+      placeholder: "1.0, or commit 02acfdd"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, architecture, Go version if you built from source.
+      placeholder: "macOS 15, arm64, go1.24.7"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: agents
+    attributes:
+      label: Which agents are configured?
+      options:
+        - No agents yet (factory ships none)
+        - opencode only
+        - opencode + a CLI (claude, codex, gemini, aider, …)
+        - opencode + an OpenAI-compatible endpoint
+        - CAMEL-AI
+        - Something else
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and did not find a duplicate
+          required: true
+        - label: I removed API keys and tokens from any pasted output
+          required: true
