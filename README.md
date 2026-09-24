@@ -1,5 +1,9 @@
 # factory
 
+[![CI](https://github.com/Dylan-Demolder/Factory/actions/workflows/ci.yml/badge.svg)](https://github.com/Dylan-Demolder/Factory/actions/workflows/ci.yml)
+[![Go 1.24.7](https://img.shields.io/badge/Go-1.24.7-00ADD8?logo=go)](https://go.dev/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 **Submit an idea. Spec it together. Walk away.**
 
 factory takes a project from a rough idea to working software you can test, using the coding agents you already pay for: opencode for building, plus as many other agents as you like (such as CAMEL-AI) for discussion and review. It interviews you until the idea can be built, has your agents argue over the spec, and then works on its own. It plans the work, holds a design roundtable before every task, builds, runs your tests, rejects fake tests, tries out every genuine use case the way a real user would, and loops until it's done.

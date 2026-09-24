@@ -184,7 +184,7 @@ func agentAdd(args []string) error {
 
 	path, err := config.ResolvePath(*cfgFlag, "")
 	if err != nil {
-		return fmt.Errorf("%w\n\nRun `factory init` first to create factory.json.", err)
+		return err
 	}
 
 	spec := config.AgentSpec{
@@ -250,7 +250,7 @@ func agentList(args []string) error {
 
 	path, err := config.ResolvePath(*cfgFlag, "")
 	if err != nil {
-		return fmt.Errorf("%w\n\nRun `factory init` first to create factory.json.", err)
+		return err
 	}
 	c, err := config.Load(path)
 	if err != nil {

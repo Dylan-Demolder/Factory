@@ -11,9 +11,6 @@ import (
 	"github.com/dylan-demolder/factory/internal/app"
 )
 
-// homeState holds the (currently trivial) state of the projects screen.
-type homeState struct{}
-
 // updateHome handles keys on the projects screen. Anything that is not a key
 // press (spinners, refreshes) leaves the screen untouched.
 func (m Model) updateHome(msg tea.Msg) (tea.Model, tea.Cmd) {

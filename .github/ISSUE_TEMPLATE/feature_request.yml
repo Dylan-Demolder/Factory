@@ -1,0 +1,53 @@
+name: Feature request
+description: Suggest an improvement or a new capability for factory
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the situation you are in today and why the current behaviour gets in the way. This is the part that decides whether the feature is worth building.
+      placeholder: I run three reviewers on separate providers, and I have no way to see which one rejected which task without opening each file.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+      description: The behaviour you expect, ideally with an example of what you would type or click.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you have considered
+      description: Workarounds you use now, or different designs you thought about.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - The pipeline (spec, plan, build, acceptance)
+        - Agents and models
+        - The terminal workspace
+        - The web interface
+        - The CLI
+        - Configuration
+        - Documentation
+        - Something else
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and did not find a duplicate
+          required: true
+        - label: This fits factory's scope — it turns an approved spec into tested software, with human control over consequential actions
+          required: true

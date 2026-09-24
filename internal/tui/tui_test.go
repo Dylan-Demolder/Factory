@@ -39,7 +39,6 @@ func TestProgressTextHandlesEmptyProject(t *testing.T) {
 func key(r rune) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}} }
 func ctrlK() tea.KeyMsg     { return tea.KeyMsg{Type: tea.KeyCtrlK} }
 func esc() tea.KeyMsg       { return tea.KeyMsg{Type: tea.KeyEsc} }
-func enter() tea.KeyMsg     { return tea.KeyMsg{Type: tea.KeyEnter} }
 
 func step(t *testing.T, m Model, msg tea.Msg) Model {
 	t.Helper()
