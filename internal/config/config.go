@@ -359,8 +359,8 @@ func ResolvePath(explicit, projectRoot string) (string, error) {
 			candidates = append(candidates, filepath.Join(projectRoot, ".factory", "config.json"))
 		}
 		candidates = append(candidates, "factory.json")
-		if dir, err := os.UserConfigDir(); err == nil {
-			candidates = append(candidates, filepath.Join(dir, "factory", "factory.json"))
+		if dir, err := BaseDir(); err == nil {
+			candidates = append(candidates, filepath.Join(dir, "factory.json"))
 		}
 	}
 	for _, path := range candidates {
