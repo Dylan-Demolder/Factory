@@ -32,7 +32,9 @@ Usage:
   factory tui [flags]                   the same, as an explicit command
       --workspace DIR   where projects live (default ~/factory-projects)
       --config PATH     config to use for new projects
-  factory init                         write factory.json + CAMEL adapter to the current directory
+  factory init                         write an empty factory.json to the current directory
+  factory agent add <name> --type …    register an agent and seat it
+  factory agent list                   show every agent and the seats it fills
   factory doctor                       check every configured agent responds
   factory new <name> [flags]           create a project, run the spec interview, then hand off
       --dir PATH        project directory (default ./<name>; may be an existing repo)
@@ -88,6 +90,8 @@ func main() {
 	switch os.Args[1] {
 	case "init":
 		err = cmdInit(args)
+	case "agent":
+		err = cmdAgent(args)
 	case "doctor":
 		err = cmdDoctor(ctx, args)
 	case "new":
@@ -204,7 +208,10 @@ func cmdInit(args []string) error {
 		}
 		fmt.Println("wrote", path)
 	}
-	fmt.Println("\nNext: edit factory.json (models, CAMEL endpoints), then run `factory doctor`.")
+	fmt.Println("\nNext: factory ships no agents of its own — add yours, then run `factory doctor`.")
+	fmt.Println("  factory agent add oc --type opencode")
+	fmt.Println("  factory agent add reviewer --type command --command claude --arg -p --arg {{prompt}} --role reviewer")
+	fmt.Println("\nSee docs/agents.md for ready-to-paste setups across services.")
 	return nil
 }
 
@@ -219,6 +226,12 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		return err
 	}
 	fmt.Println("config:", path)
+	if err := cfg.RequireConfigured(); err != nil {
+		fmt.Println("—", err)
+		fmt.Println("  factory ships no default agents: you pick the services and models.")
+		fmt.Println("  example: factory agent add oc --type opencode --role builder")
+		return nil
+	}
 	agents, err := agent.NewAll(cfg)
 	if err != nil {
 		return err
