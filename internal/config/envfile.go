@@ -14,11 +14,11 @@ import (
 // variables first — the two entry points disagreed. Reading it here makes a
 // plain shell behave like the service.
 func EnvFilePath() string {
-	dir, err := os.UserConfigDir()
+	dir, err := BaseDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(dir, "factory", "env")
+	return filepath.Join(dir, "env")
 }
 
 // LoadEnv applies the env file to this process. See LoadEnvFile.
